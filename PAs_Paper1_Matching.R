@@ -57,6 +57,8 @@ if(cluster==TRUE){
   ncores <- 6 
 }
 
+#Test changing something
+
 load(file=paste0(DataFP, "WaterbirdData_Tatsuya/FullDataSet_Edits/Hannah_Consolidation/Spec6_Cov.RData"))
 GetMeanCovs <- function(dataset){
   Spec6_Shrink <- dataset
