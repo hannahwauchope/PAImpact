@@ -1,12 +1,10 @@
-##Before/After Protection Timing Analysis
-#### Find the high quality sites
+#BACI PA analysis
+#8456
 options(repos = c(CRAN = "http://cran.rstudio.com"))
 
 cluster <- FALSE
 
 if(cluster==TRUE){
-  install.packages("rjags")
-  library(rjags)
   library(reshape2, lib.loc="/home/hsw34/my-R-libs/")
   library(data.table, lib.loc="/home/hsw34/my-R-libs/")
   library(pbmcapply, lib.loc="/home/hsw34/my-R-libs/")
@@ -15,12 +13,18 @@ if(cluster==TRUE){
   library(stringr, lib.loc="/home/hsw34/my-R-libs/")
   library(pbapply, lib.loc="/home/hsw34/my-R-libs/")
   library(StatMatch, lib.loc="/home/hsw34/my-R-libs/")
-  
+  library(rgdal, lib.loc="/home/hsw34/my-R-libs/")
+  library(rgeos, lib.loc="/home/hsw34/my-R-libs/")
+  library(sp, lib.loc="/home/hsw34/my-R-libs/")
+  library(raster, lib.loc="/home/hsw34/my-R-libs/")
+
   ResultsFP <- "/rds/user/hsw34/hpc-work/results/c3/"
   DataFP <- "/rds/user/hsw34/hpc-work/data/"
   ncores <- 32 
 } else {
   library(ggmap)
+  library(stringr)
+  library(pbapply)
   library(data.table)
   library(geosphere)
   library(maptools)
@@ -57,9 +61,8 @@ if(cluster==TRUE){
   ncores <- 6 
 }
 
-#Test changing something
-
 load(file=paste0(DataFP, "WaterbirdData_Tatsuya/FullDataSet_Edits/Hannah_Consolidation/Spec6_Cov.RData"))
+
 GetMeanCovs <- function(dataset){
   Spec6_Shrink <- dataset
   Spec6_Shrink[,c("Season", "Species", "Order", "Family", "Genus", "Count", "MigCode")] <- NULL
@@ -97,7 +100,7 @@ TheNumbers <- function(Dataset){
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7") #grey, orange, light blue, green, yellow, dark blue, dark orange, pink
 
 #### Extract sites within PAs, merge with all data ####
-PP <- readOGR("/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Data/ProtectedPlanet/WDPA_June2017-shapefile-polygons.shp")
+PP <- readOGR(paste0(DataFP, "/ProtectedPlanet/WDPA_June2017-shapefile-polygons.shp"))
 Countries <- readOGR("/Users/hannahwauchope/Documents/ArcGIS/CountryContinentWorldSHPS/World/TM_WORLD_BORDERS-0.3-SSudan.shp")
 
 ##Make a dataframe of sites and years
@@ -114,15 +117,81 @@ sitepoints <- cbind(SiteByYear$Longitude, SiteByYear$Latitude)
 sitepoints <- SpatialPointsDataFrame(sitepoints, SiteByYear, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
 
 ##Overlay with PA shapefile
-PPOverSites <- over(sitepoints, PP) #Do we lose duplicate PA entries? Maybe? How to fix?
-PPSites <- cbind(as.data.frame(SiteByYear), PPOverSites)
-#PPSites <- na.omit(PPSites)
+#Let's split it up for cluster
+ThemsTheBreaks <- seq(0,nrow(sitepoints), 100)
+ThemsTheBreaks <- c(ThemsTheBreaks[1:(length(ThemsTheBreaks)-1)], (nrow(sitepoints)))
+sitepointssplit <- lapply(1:(length(ThemsTheBreaks)-1), function(x){
+  sitepointssub <- sitepoints[(ThemsTheBreaks[x]+1):(ThemsTheBreaks[x+1]),] 
+  return(sitepointssub)
+})
+PPOverlay <- pbmclapply(1:length(sitepointssplit), function(i){
+  if(file.exists(paste0(ResultsFP, "PPOverlays/PPOverlay", "_", i, ".csv"))){
+    return(NULL)
+  }
+  if(file.exists(paste0(ResultsFP, "PPOverlays/PPOverlay", "_", i, "_CHECK.csv"))){
+    return(NULL)
+  }
+  write.csv(NULL, paste0(ResultsFP, "PPOverlays/PPOverlay", "_", i, "_CHECK.csv"), row.names = FALSE)
+  PPOverSites <- over(sitepointssplit[[i]], PP, returnList = TRUE)
+  if(length(PPOverSites)==0){
+    write.csv(NULL, paste0(ResultsFP, "PPOverlays/PPOverlay", "_", i, ".csv"), row.names = FALSE)
+  }
+  sitepointssplitdf <- as.data.frame(sitepointssplit[[i]])
+  GetSiteData <- rbindlist(lapply(1:length(PPOverSites), function(x){
+    if(nrow(PPOverSites[[x]])==0){
+      return(NULL)
+    }
+    OverSites <- PPOverSites[[x]]
+    OverSites$SiteCode <- as.character(sitepointssplitdf[x,c("SiteCode")])
+    OverSites$Duplicated <- ifelse(nrow(OverSites)>1, 1, 0)
+    return(OverSites)
+  }))
+  write.csv(GetSiteData, paste0(ResultsFP, "PPOverlays/PPOverlay", "_", i, ".csv"), row.names = FALSE)
+}, mc.cores=ncores)
 
-NOTPPSites <- unique(PPSites$SiteCode)
-NOTPPSites <- Spec6[!Spec6$SiteCode %in% NOTPPSites,]
-#write.csv(NOTPPSites, "/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/NOT_PPSites.csv", row.names=FALSE)
+## Calculate distance from each site to a PA to make a buffer and get Unprotected Sites
+sitepointsmoll <- spTransform(sitepoints, CRS("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs"))
+#PPmoll <- spTransform(PP, CRS("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs"))
+#save(PPmoll, file=paste0(DataFP, "/ProtectedPlanet/PPmoll.RData"))
+load(file=paste0(DataFP, "/ProtectedPlanet/PPmoll.RData"))
+AllDistances <- pbmclapply(1:nrow(sitepointsmoll), function(x){
+  if(x<5001){
+    RunFile <- 5000
+  } else if(x<10001){
+    RunFile <- 10000
+  } else if(x<15001){
+    RunFile <- 15000
+  } else if(x<20001){
+    RunFile <- 20000
+  } else {
+    RunFile <- 25000
+  }
+  if(file.exists(paste0(ResultsFP, "PointDistances/",RunFile, "/", x, "_Distance.csv"))){
+    return(NULL)
+  }
+  write.csv(NULL, paste0(ResultsFP, "PointDistances/",RunFile, "/", x, "_Distance.csv"))
+  Site <- sitepointsmoll[x,]
+  AllDistances <- gDistance(Site,PPmoll) #17:14 #17:23 = 9 minutes
+  MinDist <- data.frame(AllDistances, unique(Site$SiteCode))
+  names(MinDist) <- c("PointDist","SiteCode")
+  write.csv(MinDist, paste0(ResultsFP, "PointDistances/",RunFile, "/", x, "_Distance.csv"), row.names=FALSE)
+}, mc.cores=ncores)
 
-##Clean
+AllDistances <- lapply(c(5000,10000,15000, 20000,25000), function(RunFile){
+  print(RunFile)
+  Dist <- rbindlist(lapply(list.files(path = paste0(ResultsFP, "PointDistances/",RunFile, "/"), full.names=TRUE), read.csv))
+  return(Dist)
+})
+AllDistances <- rbindlist(AllDistances)
+
+NOTPPSites <- Spec6_Cov[Spec6_Cov$SiteCode %in% subset(AllDistances, PointDist>1000)$SiteCode,]
+write.csv(NOTPPSites, paste0(ResultsFP, "NOTPPSites.csv"), row.names=FALSE)
+
+##Clean Protected Sites
+
+PPSites <- as.data.frame(rbindlist(lapply(list.files(path=paste0(ResultsFP, "PPOverlays/"), pattern=paste0("*.csv$"), full.names=TRUE), fread)))
+#And by this method there are 5829 protected sites!!! YAY!!!!! AND same by the distance method! YAY!
+
 #Remove UNESCO biosphere reserves & proposed sites
 PPSites <- subset(PPSites, DESIG!="UNESCO-MAB Biosphere Reserve")
 PPSites <- subset(PPSites, DESIG_ENG!="UNESCO-MAB Biosphere Reserve")
@@ -131,7 +200,7 @@ PPSites <- subset(PPSites, STATUS!="Proposed")
 #Round everything to an appropriate number
 round_df <- function(x, digits) {
   numeric_columns <- sapply(x, class) == 'numeric'
-  x[numeric_columns] <-  round(x[numeric_columns], digits)
+  x[,numeric_columns] <-  round(x[numeric_columns], digits)
   x
 }
 PPSites <- round_df(PPSites,4)
@@ -141,39 +210,42 @@ PPSites <- subset(PPSites, STATUS_YR!=0) #Remove sites without a status year
 #Ok and this cleans so that for each site we just have one PA going on (they sometimes have multiple entries and stuff). 
 #We take minimum year if status year varies, and if there are multiple entries of minimum year just the first occurence of a particular year, 
 #but with al the desigs entered in and a binary value for multiple min year or not. 
-DuplicatedSites <- PPSites[duplicated(PPSites$SiteCode),]
-NotDuplicatedSites <- PPSites[!duplicated(PPSites$SiteCode),]
-NotDuplicatedSites <- NotDuplicatedSites[!NotDuplicatedSites$SiteCode %in% DuplicatedSites$SiteCode,]
+DuplicatedSites <- subset(PPSites, Duplicated>0)
+DuplicatedSites$Duplicated <- NULL
+NotDuplicatedSites <- subset(PPSites, Duplicated==0)
+NotDuplicatedSites$Duplicated <- NULL
 
-DuplicatedSitesData <- PPSites[PPSites$SiteCode %in% DuplicatedSites$SiteCode,]
-DuplicatedSitesData$STATUS_YR <- as.numeric(as.character(DuplicatedSitesData$STATUS_YR))
-DuplicatedSitesData$SiteStatYr <- paste0(DuplicatedSitesData$SiteCode, ".", DuplicatedSitesData$STATUS_YR)
-DuplicatedSitesCast <- dcast(DuplicatedSitesData, SiteCode~., min, value.var="STATUS_YR") #In cases where duplicated PAs have different desingation years, take the earliest year
+DuplicatedSites$STATUS_YR <- as.numeric(as.character(DuplicatedSites$STATUS_YR))
+DuplicatedSites$SiteStatYr <- paste0(DuplicatedSites$SiteCode, ".", DuplicatedSites$STATUS_YR)
+DuplicatedSitesCast <- dcast(DuplicatedSites, SiteCode~., min, value.var="STATUS_YR") #In cases where duplicated PAs have different desingation years, take the earliest year
 names(DuplicatedSitesCast) <- c("SiteCode", "STATUS_YR")
 DuplicatedSitesCast$SiteStatYr <- paste0(DuplicatedSitesCast$SiteCode, ".", DuplicatedSitesCast$STATUS_YR)
 
-DuplicatedSitesYear <- DuplicatedSitesData[DuplicatedSitesData$SiteStatYr %in% DuplicatedSitesCast$SiteStatYr,] #So this is now a dataframe of the duplicates, but cut down just the minimum year for each duplicate
+DuplicatedSitesYear <- DuplicatedSites[DuplicatedSites$SiteStatYr %in% DuplicatedSitesCast$SiteStatYr,] #So this is now a dataframe of the duplicates, but cut down just the minimum year for each duplicate
 
-#But sometimes we have multiple PAs designated in the same year (or possibly the same just with different statuses)
+#But sometimes we have multiple PAs designated in the same year (or possibly the same PA just with different statuses)
 DuplicatedYear <- subset(dcast(DuplicatedSitesYear, SiteStatYr~., length, value.var="SiteCode"), .>1)
 DuplicatedYear$SiteCode <- str_split_fixed(DuplicatedYear$SiteStatYr, "[.]",2)[,1]
 DuplicatedYear <- DuplicatedSitesYear[DuplicatedSitesYear$SiteCode %in% DuplicatedYear$SiteCode,] #Get all entries for those sites
 
 DuplicatedYearCast <- aggregate(DESIG~SiteCode, DuplicatedYear, paste) #Gather together all the DESIGs into one column, separated by commas
-DuplicatedYearCast$Duplicates <- 2
+DuplicatedYearCast$Duplicated <- 2
 DuplicatedYearCast2 <- aggregate(DESIG_ENG~SiteCode, DuplicatedYear, paste) #Ditto DESIG_ENG
 DuplicatedYearCast <- merge(DuplicatedYearCast, DuplicatedYearCast2, by="SiteCode")
+DuplicatedYearCast3 <- aggregate(GIS_AREA~SiteCode, DuplicatedYear, paste) #Ditto DESIG_ENG
+DuplicatedYearCast <- merge(DuplicatedYearCast, DuplicatedYearCast3, by="SiteCode")
 DuplicatedYearCast$DESIG <- as.character(DuplicatedYearCast$DESIG)
 DuplicatedYearCast$DESIG_ENG <- as.character(DuplicatedYearCast$DESIG_ENG)
+DuplicatedYearCast$GIS_AREA <- as.character(DuplicatedYearCast$GIS_AREA)
 
 DuplicatedYear <- DuplicatedSitesYear[duplicated(DuplicatedSitesYear$SiteCode),] #Get the duplicate sites JUST TAKES FIRST ENTRY FOR EACH SO WE HAVE ALL THE DATA FOR DESIG ETC BUT NOT FOR EVERYTHING ELSE
 DuplicatedYear <- DuplicatedYear[!duplicated(DuplicatedYear$SiteCode),] #Get the duplicate sites JUST TAKES FIRST ENTRY FOR EACH SO WE HAVE ALL THE DATA FOR DESIG ETC BUT NOT FOR EVERYTHING ELSE
 
-DuplicatedYear[,c("DESIG", "DESIG_ENG")] <- NULL
+DuplicatedYear[,c("DESIG", "DESIG_ENG", "GIS_AREA")] <- NULL
 DuplicatedYear <- merge(DuplicatedYear, DuplicatedYearCast, by="SiteCode")
 
 NOTDuplicatedYear <- DuplicatedSitesYear[!DuplicatedSitesYear$SiteCode %in% DuplicatedYear$SiteCode,] 
-NOTDuplicatedYear$Duplicates <- 1
+NOTDuplicatedYear$Duplicated <- 1
 NOTDuplicatedYear <- data.frame(lapply(NOTDuplicatedYear, function(x){
   if(is.factor(x)==TRUE){
     column <- as.character(x)
@@ -193,16 +265,15 @@ NotDuplicatedSites <- data.frame(lapply(NotDuplicatedSites, function(x){
     return(x)
   }
 }), stringsAsFactors=FALSE)
-NotDuplicatedSites$Duplicates <- 0
+NotDuplicatedSites$Duplicated <- 0
+NOTDuplicatedYear$SiteStatYr <- NULL
 
-All_Sites <- rbind(NotDuplicatedSites, NOTDuplicatedYear) #And combine non duplicate with cleaned duplicates
-
+AllSites <- rbind(NotDuplicatedSites, NOTDuplicatedYear) #And combine non duplicate with cleaned duplicates
 # 0 = no duplicates, 1 = duplicates but there was one min year, 2 = duplicates by there was more than one min year
 
 ## Add to bird data ##
 #Add to bird data
-PA_Counts <- merge(PPSites, Spec6, by=c("SiteCode", "Longitude", "Latitude"))
-#PA_Counts <- merge(PA_Bird_Counts, specstats, by.x="Species", by.y="BLsciname")
+PA_Counts <- merge(AllSites, Spec6_Cov, by=c("SiteCode"))
 PA_Counts[,c("MinYear", "MaxYear")] <- NULL
 PA_Counts$SiteSpec <- paste0(PA_Counts$Species, ".", PA_Counts$SiteCode)
 
@@ -212,6 +283,10 @@ PA_Counts_MaxYearSS <- dcast(PA_Counts, SiteSpec~., max, value.var="Year")
 names(PA_Counts_MaxYearSS) <- c("SiteSpec", "MaxYearSS")
 PA_Counts <- merge(PA_Counts, PA_Counts_MinYearSS, by="SiteSpec")
 PA_Counts <- merge(PA_Counts, PA_Counts_MaxYearSS, by="SiteSpec")
+PA_Counts$MaxYearSS <- as.numeric(PA_Counts$MaxYearSS)
+PA_Counts$MinYearSS <- as.numeric(PA_Counts$MinYearSS)
+PA_Counts$STATUS_YR <- as.numeric(as.character(PA_Counts$STATUS_YR))
+
 PA_Counts$FallsWithin <- ifelse(PA_Counts$STATUS_YR > PA_Counts$MinYearSS & PA_Counts$STATUS_YR < PA_Counts$MaxYearSS, "TRUE", "FALSE")
 
 Birds_fallsw <- subset(PA_Counts, FallsWithin=="TRUE")
@@ -222,12 +297,15 @@ Birds_fallsw_countedyears <- unique(Birds_fallsw[,c("SiteSpec", "STATUS_YR", "Lo
 Birds_fallsw_countedyearscast <- dcast(Birds_fallsw_countedyears, SiteSpec~BeforeAfterStat, length, value.var="Year")
 Birds_fallsw <- merge(Birds_fallsw, Birds_fallsw_countedyearscast, by="SiteSpec")
 
-write.csv(Birds_fallsw, "/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/PPSites2.csv", row.names=FALSE)
+write.csv(Birds_fallsw, paste0(ResultsFP, "PPSites.csv"), row.names=FALSE)
 
+#To Check Points
+write.csv(unique(Birds_fallsw[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/PPSITES.csv", row.names=FALSE)
+write.csv(unique(NOTPPSites[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/NOTPPSITES.csv", row.names=FALSE)
 
 #### Prepare Site Matching Data ####
-PPSitesOriginal <- fread(paste0(ResultsFP, "PP_Sites2.csv"))
-NOTPPSitesOriginal <- fread(paste0(ResultsFP, "NOT_PP_Sites.csv"))
+PPSitesOriginal <- fread(paste0(ResultsFP, "PPSites.csv"))
+NOTPPSitesOriginal <- fread(paste0(ResultsFP, "NOTPPSites.csv"))
 
 PPSitesOriginal$STATUS_YR <- as.numeric(PPSitesOriginal$STATUS_YR)
 names(PPSitesOriginal)[names(PPSitesOriginal)=="NAME"] <- "PAName"
@@ -306,14 +384,16 @@ AllSites <- rbind(subset(AllSites, Treatment==0), AllSitesTREAT)
 TheNumbers(subset(AllSites, Treatment==1))
 TheNumbers(subset(AllSites, Treatment==0))
 
-#Standardise so Not PP sites only contain species present in PP sites
+#Standardise so Not PP sites only contain species present in PP sites and vice versa
 PPSites <- subset(AllSites, Treatment==1)
 NOTPPSites <- subset(AllSites, Treatment==0)
 NOTPPSites <- NOTPPSites[NOTPPSites$Species %in% PPSites$Species,]
+PPSites <- PPSites[PPSites$Species %in% NOTPPSites$Species,]
+
 AllSites <- rbind(PPSites, NOTPPSites)
 TheNumbers(subset(AllSites, Treatment==0))
 
-#
+
 AllSitesData <- unique(AllSites[,c("SiteSpecSeason", "Treatment", "MinYearSS", "MaxYearSS", "AfterStat", "BeforeStat", "BeforeStatYears", "AfterStatYears", "WDPAID", "PAName", "DESIG_TYPE", "IUCN_CAT", "GIS_AREA", "NO_TAKE", "STATUS", "STATUS_YR", "METADATAID")])
 
 Spec6_AllSites <- merge(Spec6_Cov, AllSitesData, by="SiteSpecSeason")
@@ -334,11 +414,14 @@ Spec6_AllSites <- Spec6_AllSites[Spec6_AllSites$SiteSpecSeasonYear %in% Continuo
 #A few species got knocked out in that cull, so remove them from the control sites
 SpeciesCheck <- dcast(Spec6_AllSites, Species~Treatment, length, value.var="SiteCode")
 names(SpeciesCheck) <- c("Species", "Cont", "Treat")
-SpeciesToRemove <- subset(SpeciesCheck, Treat==0)
-Spec6_AllSites <- Spec6_AllSites[!Spec6_AllSites$Species %in% SpeciesToRemove$Species,]
+SpeciesToKeep <- subset(SpeciesCheck, Treat!=0)
+SpeciesToKeep <- subset(SpeciesToKeep, Cont!=0)
+Spec6_AllSites <- Spec6_AllSites[Spec6_AllSites$Species %in% SpeciesToKeep$Species,]
 
 TheNumbers(subset(Spec6_AllSites, Treatment==0)) #          8925            262         182180 (SiteCode, Species, SiteSpecSeason)
+#7493            332         162754 
 TheNumbers(subset(Spec6_AllSites, Treatment==1)) #            547            262           9693  
+#1415            335          25245 
 
 ContinuousVariables <- Spec6_AllSites[,c("SiteSpecSeasonYear", "Treatment", "PrecipAnnual", "PrecipSeason", "MeanTempAnnual", "MinTempAnnual", "MaxTempAnnual", "MeanTempSeason", "MinTempSeason", "MaxTempSeason",
                                          "Nitr", "Phos", "grazing", "ir_norice", "ir_rice", "pasture", "rangeland", "rf_norice", "rf_rice", "popd", "uopp", "popc", "GovMean", 
@@ -375,7 +458,7 @@ Spec6_AllSites <- Spec6_AllSites[,!colnames(Spec6_AllSites) %in% colnames(Contin
 write.csv(Spec6_AllSites, paste0(ResultsFP, "Spec6_AllSites.csv"), row.names = FALSE)
 save(VariablesForMatchingByYear, file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
 
-#### Conduct Matching ####
+#### Conduct Matching #### 
 Spec6_AllSites <- as.data.frame(fread(paste0(ResultsFP, "Spec6_AllSites.csv")))
 PPSites <- subset(Spec6_AllSites, Treatment==1)
 NOTPPSites <- subset(Spec6_AllSites, Treatment==0)
@@ -417,20 +500,33 @@ BeforeSlopes2 <- BeforeSlopes2[,c("SS", "Class")]
 
 PPSites <- merge(PPSites, BeforeSlopes2, by.x="SiteSpecSeason", by.y="SS")
 TheNumbers(PPSites)
-PPSites <- subset(PPSites, STATUS_YR>1970) #Not enough data to get a good mahalanobis estimate. ONLY ONE SITE
+TheNumbers(NOTPPSites)
+
+#Check number of sites at each desig year
+PPSitesDC <- unique(PPSites[,c("SiteCode", "STATUS_YR")]) #DC = Desig Check
+PPSitesDCCast <- dcast(PPSitesDC, STATUS_YR~., length, value.var="SiteCode")
+PPSitesDCCast1 <- subset(PPSitesDCCast, .==1)
+PPSites <- PPSites[!PPSites$STATUS_YR %in% PPSitesDCCast1$STATUS_YR,]
 TheNumbers(PPSites)
 
-#Create MD matrices for each designation year
+#Create MD matrices for each designation year THIS IS BREAKING FOR SOME REASON
 AllYears <- unique(PPSites$STATUS_YR)
-MDYearList <- pbmclapply(AllYears, function(YEAR){
+MDYearList <- pblapply(AllYears[15:24], function(YEAR){
+  print(YEAR)
   PPSitesCovs <- GetMeanCovs(subset(PPSites, Year<= YEAR & STATUS_YR==YEAR))
   NOTPPSitesCovs <- GetMeanCovs(subset(NOTPPSites, Year<= YEAR))
+  CheckForZeros <- rbind(PPSitesCovs, NOTPPSitesCovs)
+  CheckForZeros <- t(t(colSums(CheckForZeros[,colnames(CheckForZeros) %in% VariablesForMatchingByYear])))
+  CheckForZeros$Var <- row.names(CheckForZeros)
+  
+  subset(CheckForZeros)
+  
   MD <- as.data.frame(mahalanobis.dist(data.x= NOTPPSitesCovs[,colnames(NOTPPSitesCovs) %in% VariablesForMatchingByYear], data.y=PPSitesCovs[,colnames(PPSitesCovs) %in% VariablesForMatchingByYear]))
   rownames(MD) <- NOTPPSitesCovs$SiteCode
   colnames(MD) <- PPSitesCovs$SiteCode
   MDScale <- scale(MD,center=rep(0.5, ncol(MD)), scale=rep(10, ncol(MD)))
   return(MDScale)
-}, mc.cores=ncores)
+}) #, mc.cores=ncores
 
 names(MDYearList) <- AllYears
 save(MDYearList, file=paste0(ResultsFP, "MDYearList.RData"))
@@ -439,13 +535,13 @@ save(NOTPPSites, file=paste0(ResultsFP, "NOTPPSites.RData"))
 
 ##Begin Matching
 load(file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
+load(file=paste0(ResultsFP, "MDYearList.RData"))
+load(file=paste0(ResultsFP, "PPSites.RData"))
+load(file=paste0(ResultsFP, "NOTPPSites.RData"))
 TheNumbers <- function(Dataset){
   Dataset <- as.data.frame(Dataset)
   sapply(c('SiteCode', 'Species', 'SiteSpecSeason'), function(x) length(unique(Dataset[,c(x)])))
 }
-load(file=paste0(ResultsFP, "MDYearList.RData"))
-load(file=paste0(ResultsFP, "PPSites.RData"))
-load(file=paste0(ResultsFP, "NOTPPSites.RData"))
 
 #Create empty MD matrix of all sites
 PPSiteNames <- unique(PPSites$SiteCode)
@@ -455,25 +551,29 @@ MD <- matrix(nrow = length(NOTPPSiteNames), ncol = length(PPSiteNames))
 rownames(MD) <- NOTPPSiteNames
 colnames(MD) <- PPSiteNames
 
-Spec <- "Actitis hypoleucos"
+Spec <- "Phalacrocorax neglectus"
 
 Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){
-  if(file.exists(paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))){
+  if(file.exists(paste0(ResultsFP, "MatchFinal/Matched", Spec,"CHECK.csv"))){
     return(NULL)
   }
   
   print(Spec)
-  write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
+  write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,"CHECK.csv"))
   
   #Reduce treatment to only sites with buffer years before and after
   PPSitesSpec <- subset(PPSites, Species==Spec & Treatment==1 & AfterStatYears>=5 & BeforeStatYears>=5)
   #PPSiteCovs <- unique(PPSitesSpec[,c("SiteCode", "Treatment", "Year", VariablesForMatchingByYear)])
   
-  if(nrow(PPSitesSpec)==0){return(NULL)}
+  if(nrow(PPSitesSpec)==0){
+    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
+    return(NULL)
+  }
   NOTPPSitesSpec <- subset(NOTPPSites, Species==Spec & Treatment==0)
   SpecAllData <- data.table::rbindlist(list(PPSitesSpec, NOTPPSitesSpec), use.names=TRUE, fill=TRUE)
   SpecAllData$Match <- "Not Matched"
   if(length(unique(PPSitesSpec$SiteCode))<2){
+    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
     return(NULL)
   }
   MatchMatrix <- MD[,colnames(MD) %in% PPSitesSpec$SiteCode]
@@ -571,6 +671,11 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){
     }
   }
   
+  if(nrow(MatchMatrix)==0){
+    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
+    return(NULL)
+  }
+  
   MatchMatrix$Idiot <- "Hah, Idiot" #Because r is stupid and if there's only one column it won't return the rowname of the min value
   #Assess competition
   #Turn it into a loop
@@ -601,6 +706,7 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){
   Matched <- subset(Matched, Treatment!="Idiot")
   Matched <- Matched[!is.na(Matched$Control),]
   if(nrow(Matched)==0){
+    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
     return(NULL)
   }
   Matched$MatchID <- 1:nrow(Matched)
@@ -623,8 +729,39 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){
   return(SpecSCCAll)
 }))
 
+#### FOR MEETING KILL ME LATER ####
+PPSitesCountry <- unique(PPSites[,c("SiteCode","Country")])
+PPSitesCountry <- dcast(PPSitesCountry, Country~., length, value.var="SiteCode")
+PPSitesCountry <- PPSitesCountry[order(PPSitesCountry$.,decreasing = TRUE),]
+names(PPSitesCountry) <- c("Country","NProtectedSites")
+
+NOTPPSitesCountry <- unique(NOTPPSites[,c("SiteCode","Country")])
+NOTPPSitesCountry <- dcast(NOTPPSitesCountry, Country~., length, value.var="SiteCode")
+NOTPPSitesCountry <- NOTPPSitesCountry[order(NOTPPSitesCountry$.,decreasing = TRUE),]
+names(NOTPPSitesCountry) <- c("Country","NUnprotectedSites")
+
+Both <- merge(PPSitesCountry, NOTPPSitesCountry, by="Country")
+Both <- Both[order(Both$NProtectedSites,decreasing = TRUE),]
+
+
 #### Assess matching ####
-MatchingFinal <- as.data.frame(subset(rbindlist(lapply(list.files(path=paste0(ResultsFP, "MatchFinal/"), full.names=TRUE), fread)), Match=="Matched"))
+load(file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
+MatchingFinal <- list.files(path=paste0(ResultsFP, "MatchFinal/"), pattern=paste0("*CHECK.csv$"), full.names=TRUE)
+MatchingFinalNames <- str_split_fixed(MatchingFinal, "Matched",2)[,2]
+MatchingFinalNames <- str_split_fixed(MatchingFinalNames, "CHECK.csv",2)[,1]
+
+MatchingFinal2 <- list.files(path=paste0(ResultsFP, "MatchFinal/"), full.names=TRUE)
+MatchingFinal2 <- MatchingFinal2[!MatchingFinal2 %in% MatchingFinal]
+MatchingFinal2Names <- str_split_fixed(MatchingFinal2, "Matched",2)[,2]
+MatchingFinal2Names <- str_split_fixed(MatchingFinal2Names, ".csv",2)[,1]
+
+if(length(MatchingFinal2Names[!MatchingFinal2Names%in%MatchingFinalNames])>0){print("PANIC A SPECIES IS MISSING!")}
+
+MatchingFinal <- lapply(MatchingFinal2, fread)
+MatchingFinal <- lapply(MatchingFinal, function(x){ if(ncol(x)==1){return(NULL)} else {return(x)}})
+MatchingFinal <- MatchingFinal[!sapply(MatchingFinal, is.null)]
+MatchingFinal <- as.data.frame(subset(rbindlist(MatchingFinal), Match=="Matched"))
+
 MatchingFinal <- MatchingFinal[complete.cases(MatchingFinal$SiteCode),]
 MatchingFinal$MatchID <- as.numeric(MatchingFinal$MatchID)
 MatchingFinal$SpecMatch <- paste0(MatchingFinal$Species, ".", MatchingFinal$MatchID)
@@ -768,12 +905,21 @@ names(SummariesFinal) <- c("Variable", "StDiff", "MeanDist", "Species")
 MatchDataFinal <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "MatchData/Final/"), full.names=TRUE), fread))
 MatchingFinalCleaned <- MatchingFinal[MatchingFinal$SpecMatch %in% MatchDataFinal$SpecMatch,]
 
+save(MatchingFinalCleaned, file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
+
 TheNumbers(subset(MatchingFinalCleaned, Treatment==1))
 TheNumbers(subset(MatchingFinalCleaned, Treatment==0))
 TheNumbers(PPSites)
 TheNumbers(NOTPPSites)
 
 #Extract species stats for comparison
+SpecStats <- read.csv(file=paste0(DataFP, "WaterbirdData_Tatsuya/FullDataSet_Edits/Hannah_Consolidation/SpeciesStats.csv"))
+SpecStats$Order <- as.factor(SpecStats$Order)
+SpecStats$Order <- recode_factor(SpecStats$Order, "CHARADRIIFORMES" = "Charadriiformes", "ANSERIFORMES" = "Anseriformes", "GRUIFORMES" = "Gruiformes", "CICONIIFORMES" = "Ciconiiformes",
+                                 "SULIFORMES" = "Suliformes", "PELECANIFORMES" = "Pelicaniformes", "PROCELLARIIFORMES" = "Procellariiformes", "GAVIIFORMES" = "Gaviformes", 
+                                 "PHOENICOPTERIFORMES" = "Phoenicopteriformes", "PODICIPEDIFORMES" = "Podicipediformes")
+SpecStats$Genus <- str_split_fixed(SpecStats$Species, "[ ]", 2)[,1]
+
 TaxaData <- function(Dataset){
   AllSitesStats <- unique(Dataset[,c("Species", "SiteCode", "Treatment")])
   AllSitesStats <- merge(AllSitesStats, SpecStats, by="Species")
@@ -814,3 +960,209 @@ AllOrdAllFam <- as.data.frame(matrix(nrow=1, ncol=6, c("All Orders", "All Famili
 names(AllOrdAllFam) <- names(BothTaxa)
 BothTaxa <- rbind(BothTaxa, AllOrdAllFam)
 write.csv(BothTaxa, "/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/Figures/TaxaCompTable.txt", row.names=FALSE)
+
+#### Maps ####
+library(ggplot2)
+library(ggmap)
+library(rgeos)
+library(plyr)
+library(lattice)
+library(RColorBrewer)
+library(pbapply)
+library(maps)
+library(ggalt)
+
+MapVersion <- "Filtered" #"Filtered" "Matched
+
+if(MapVersion=="NotFiltered"){
+  NOTPPSitesNOTFILTERED <- fread(paste0(ResultsFP, "NOTPPSites.csv"))
+  PPSitesNOTFILTERED <- fread(paste0(ResultsFP, "PPSitesNOTFILTERED.csv"))
+  PPSitesNOTFILTERED <- Spec6_Cov[Spec6_Cov$SiteCode %in% PPSitesNOTFILTERED$SiteCode,]
+  PPSitesNOTFILTERED$Treatment <- 1
+  NOTPPSitesNOTFILTERED$Treatment <- 0
+  write.csv(unique(PPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/PPNotFiltered.csv", row.names=FALSE)
+  write.csv(unique(NOTPPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/NOTPPNotFiltered.csv", row.names=FALSE)
+  
+  SiteNamesPPNotFiltered <- SiteNames[SiteNames$SiteCode %in% PPSitesNOTFILTERED$SiteCode,]
+  SiteNamesNOTPPNotFiltered <- SiteNames[SiteNames$SiteCode %in% NOTPPSitesNOTFILTERED$SiteCode,]
+  hey <- SiteNamesNOTPPNotFiltered[grep(" ", SiteNamesNOTPPNotFiltered$SiteName),]
+  write.csv(hey, "/Users/hannahwauchope/Desktop/birdtest/NOTPPNotFiltered.csv", row.names=FALSE)
+  
+  
+  MapSites <- rbind(PPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")], NOTPPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")])
+} 
+if(MapVersion=="Filtered"){
+  load(file=paste0(ResultsFP, "PPSites.RData"))
+  load(file=paste0(ResultsFP, "NOTPPSites.RData"))
+  write.csv(unique(PPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/PPFiltered.csv", row.names=FALSE)
+  write.csv(unique(NOTPPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/NOTPPFiltered.csv", row.names=FALSE)
+  
+  MapSites <- rbind(PPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")], NOTPPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")])
+}
+if(MapVersion=="Matched"){
+  MapSites <- MapSites[MapSites$SiteCode %in% MatchDataFinal$SiteCode,]
+}
+
+PASites <- unique(MapSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")])
+PASites$Treatment <- factor(as.character(PASites$Treatment), levels=c(1,0))
+PASites$Treatment <- recode_factor(PASites$Treatment, '1' = "Protected", '0' ="Unprotected")
+PASites <- PASites[order(PASites$Treatment, decreasing=TRUE),]
+
+#Making an inset map watch the fuck out
+mapWorld <- borders(database="world", colour="grey70", fill="grey70")
+mapWorld2 <- borders(database="world", xlim = c(-11, 50), ylim = c(35, 75), colour="grey70", fill="grey70")
+
+mp  <- ggplot() + mapWorld +
+  #geom_polygon(data = mapWorld4, aes(x=mapWorld4$long, y=mapWorld4$lat, map_id=mapWorld4$group)) +
+  #geom_polygon(aes(x=CountryDeets$long, y=CountryDeets$lat))+
+  geom_point(aes(x=PASites$Longitude, y=PASites$Latitude, colour=PASites$Treatment), size=1.8, shape=19, alpha=0.9)+ #, colour="dodgerblue4" #, colour="#009E73"
+  coord_proj("+proj=robin +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")+
+  scale_colour_manual(values=c("#0B4EA2", "olivedrab3"), guide=FALSE)+
+  theme(
+    aspect.ratio=0.53, 
+    panel.grid = element_blank(), 
+    strip.background = element_blank(),
+    strip.text = element_text(hjust = 0),
+    legend.justification = "top",
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    plot.background=element_rect(fill = "transparent"),
+    panel.background = element_rect(fill = "transparent"))
+mp
+
+mp2  <- ggplot() + mapWorld2 +
+  #geom_polygon(data = mapWorld4, aes(x=mapWorld4$long, y=mapWorld4$lat, map_id=mapWorld4$group)) +
+  #geom_polygon(aes(x=CountryDeets$long, y=CountryDeets$lat))+
+  geom_point(aes(x=PASites$Longitude, y=PASites$Latitude, colour=PASites$Treatment), size=1.3, shape=19, alpha=0.9)+ #, colour="dodgerblue4" #, colour="#009E73"
+  coord_map(xlim = c(-11, 30), ylim = c(35, 60))+
+  scale_colour_manual(values=c("#0B4EA2", "olivedrab3"), guide=FALSE)+
+  theme(
+    panel.grid = element_blank(), 
+    panel.border = element_rect(size = 1, fill = NA, colour="black"),
+    legend.justification = "top",
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    plot.background=element_rect(fill = "transparent"),
+    panel.background = element_rect(fill = "transparent"))
+mp2
+
+png(paste0("/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/Figures/PreAnalysisPlan/", MapVersion, "_Map.png"), 19, 9, units="in", res=300, bg="transparent") #Save as an image
+grid.newpage()
+v1<-viewport(width = 1, height = 1, x = 0.5, y = 0.5) #plot area for the main map
+v2<-viewport(width = 0.44, height = 0.39, x = 0, y = 0.02, just=c("left", "bottom")) #plot area for the inset map
+print(mp,vp=v1) 
+print(mp2,vp=v2, mar=c(0,0,0,0))
+dev.off()
+
+
+
+
+
+
+
+#### Graveyard ####
+###ForTesting
+PPOverSites <- over(subset(sitepoints, SiteCode=="15693"), PP, returnList = TRUE)
+i <- 45 #PPOverlay 45 is missing!!!!
+ok <- sitepointssplit[[i]]
+SC <- "15693"
+subset(ok, SiteCode=="15693")
+
+PPOverSitesALL <- over(sitepoints, PP)
+PPOverSitesALL2 <- PPOverSitesALL[!is.na(PPOverSitesALL$WDPAID),]
+#BY THIS METHOD there are 5829 protected sites
+
+#The three with NULL = 153, 159, 179
+sitepointssub1 <- sitepoints[(ThemsTheBreaks[153]+1):(ThemsTheBreaks[153+1]),] 
+sitepointssub2 <- sitepoints[(ThemsTheBreaks[159]+1):(ThemsTheBreaks[159+1]),] 
+sitepointssub3 <- sitepoints[(ThemsTheBreaks[179]+1):(ThemsTheBreaks[179+1]),] 
+sitepointssub1 <- rbind(sitepointssub1, sitepointssub2, sitepointssub3)
+write.csv(sitepointssub1, "/Users/hannahwauchope/Desktop/THEDEADONES.csv", row.names=FALSE)
+### End testing
+
+#### METT Testing ####
+METT <- read.csv("/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/METT/Tbl_Spatial.csv")
+Ok <- merge(PPSites, METT, by.x="WDPAID", by.y="WDPA.ID")
+Ok2 <- unique(Ok[,c("SiteCode", "ISO3", "Country", "WDPAID")])
+
+#Lol no METT data. 
+
+#### Distance Testing ####
+AllDistances2 <- subset(AllDistances, PointDist>0)
+
+#Proportional cutoffs
+#Protected site proportions
+ProtProp <- dcast(PPSites, ISO3~., length, value.var="SiteCode")
+ProtProp <- ProtProp[order(ProtProp$., decreasing= TRUE),]
+ProtProp$Prop <- ProtProp$./sum(ProtProp$.)
+ProtProp$. <- NULL
+names(ProtProp) <- c("ISO3", "Protected")
+
+#Distances proportions
+nrow(subset(AllDistances2, PointDist<1000))/nrow(AllDistances2)
+nrow(subset(AllDistances2, PointDist<5000))/nrow(AllDistances2)
+nrow(subset(AllDistances2, PointDist<10000))/nrow(AllDistances2)
+nrow(subset(AllDistances2, PointDist<15000))/nrow(AllDistances2)
+
+CountryCast <- function(DATA, Buffer){
+  ok <- dcast(DATA, ISO3~., length, value.var="SiteCode",fill=0)
+  ok <- ok[order(ok$.,decreasing = TRUE),]
+  ok$Proportion <- round(ok$./sum(ok$.),3)
+  #ok <- subset(ok,Proportion>0.00)
+  names(ok) <- c("ISO3","NSites","Prop")
+  ok$Buffer <- Buffer
+  return(ok)
+}
+
+SitesCountries <- unique(Spec6_Cov[,c("SiteCode" ,"ISO3")])
+AllDistances3 <- merge(AllDistances2, SitesCountries, by="SiteCode")
+
+NoBuff <- CountryCast(AllDistances3,"NoBuffer")
+OneKm <- CountryCast(subset(AllDistances3, PointDist>1000),"1km")
+FiveKm <- CountryCast(subset(AllDistances3, PointDist>5000),"5km")
+TenKm <- CountryCast(subset(AllDistances3, PointDist>10000),"10km")
+
+All <- rbind(NoBuff, OneKm, FiveKm,TenKm)
+AllCast <- dcast(All, ISO3~Buffer, value.var="Prop", fill=0)
+AllCast <- AllCast[order(AllCast$NoBuffer,decreasing=TRUE),]
+AllCast <- AllCast[,c(1,ncol(AllCast),2:(ncol(AllCast)-1))]
+rownames(AllCast) <-NULL
+
+AllCast$Sum <- rowSums(AllCast[,c(2:ncol(AllCast))])
+AllCast2 <- head(AllCast, 10)
+AllCast3 <- subset(AllCast, Sum>0.1)
+AllCast4 <- AllCast[AllCast$ISO3 %in% ProtProp$ISO3,]
+
+AllCast5 <- AllCast4
+
+AllCast5 <- merge(AllCast5,ProtProp, by="ISO3")
+AllCast5$Sum <- NULL
+AllCast5 <- merge(AllCast5,Countries[,c("ISO3", "NAME")], by="ISO3")
+AllCast5$ISO3 <- NULL
+AllCast5 <- AllCast5[order(AllCast5$Protected, decreasing=TRUE),]
+AllCast5 <- head(AllCast5, 10)
+AllCastMelt <- melt(AllCast5, id.vars = "NAME")
+AllCastMelt$value <- AllCastMelt$value*100
+AllCastMelt$variable <- factor(AllCastMelt$variable, levels=c("Protected","NoBuffer","1km","5km","10km"))
+
+ggplot(data=AllCastMelt, aes(x=variable,y=value,group=NAME))+
+  geom_point(aes(color=as.character(NAME)))+
+  geom_line(aes(color=as.character(NAME)))+ #, linetype="dashed"
+  #geom_text(aes(label = AllCastMelt$NAME, colour = AllCastMelt$NAME, x = 5, y = value), hjust = -.1)
+  geom_dl(aes(label = NAME,color=NAME), method = list(dl.combine("last.points"), cex = 0.9)) +
+  #scale_colour_discrete(guide = 'none')  +  
+  xlab("Buffer")+
+  ylab("Percentage of Sites")+
+  theme(
+    panel.background = element_blank(),
+    plot.margin = unit(c(0,0,0,0), "lines"),
+    panel.grid = element_blank(), 
+    text = element_text(size=10, colour = "black"),
+    axis.text.x = element_text(size=10, colour = "black"),
+    axis.text.y = element_text(size=10, colour = "black"),
+    panel.border = element_rect(size = 1, fill = NA),
+    strip.background = element_blank(),
+    strip.text = element_text(hjust = 0, size=10, colour = "black"),
+    aspect.ratio = 0.7)
