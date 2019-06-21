@@ -96,7 +96,6 @@ GetMeanCovs <- function(dataset){
     names(SitesCovCast) <- c("SiteCode", x)
     return(as.data.frame(SitesCovCast)[2])
   })))
-  
   SitesCovStatic <- unique(Spec6_Shrink[,c("SiteCode", staticvariables)])
   SitesCovCast <- merge(SitesCovCast, SitesCovStatic, by="SiteCode")
   SitesCovCast$AnthRound <- as.factor(round_any(as.numeric(as.character(SitesCovCast$Anthrome)), 10))
@@ -229,8 +228,8 @@ AllDistances <- rbindlist(lapply(c(5000,10000,15000, 20000,25000), function(RunF
   return(Dist)
 }))
 
-NOTPPSites <- Spec6_Cov[Spec6_Cov$SiteCode %in% subset(AllDistances, PointDist>1000)$SiteCode,] #Subset our main dataset to sites over 1km from PAs
-write.csv(NOTPPSites, paste0(ResultsFP, "NOTPPSites.csv"), row.names=FALSE) #save
+NOTPPSitesOriginal <- Spec6_Cov[Spec6_Cov$SiteCode %in% subset(AllDistances, PointDist>1000)$SiteCode,] #Subset our main dataset to sites over 1km from PAs
+save(NOTPPSitesOriginal, file=paste0(ResultsFP, "NOTPPSitesOriginal.RData"))
 
 ##Clean Protected Sites
 PPSites <- as.data.frame(rbindlist(lapply(list.files(path=paste0(ResultsFP, "PPOverlays/"), pattern=paste0("*.csv$"), full.names=TRUE), fread))) #Read in the sites that overlay PAs (note, have to use this rather than just the distances, as this includes data on all the stacked PAs the point overlaps with)
@@ -339,16 +338,16 @@ Birds_fallsw$BeforeAfterStat <- ifelse(Birds_fallsw$Year<=Birds_fallsw$STATUS_YR
 Birds_fallsw_countedyears <- unique(Birds_fallsw[,c("SiteSpec", "STATUS_YR", "Longitude", "Latitude", "MinYearSS", "MaxYearSS", "Year", "BeforeAfterStat")]) #Reduce
 Birds_fallsw_countedyearscast <- dcast(Birds_fallsw_countedyears, SiteSpec~BeforeAfterStat, length, value.var="Year") #Cast
 Birds_fallsw <- merge(Birds_fallsw, Birds_fallsw_countedyearscast, by="SiteSpec") #Add the values in
- 
-write.csv(Birds_fallsw, paste0(ResultsFP, "PPSites.csv"), row.names=FALSE) #Write out
+PPSitesOriginal <- Birds_fallsw
+save(PPSitesOriginal, file=paste0(ResultsFP, "PPSitesOriginal.RData"))
 
 #To Check Points
-write.csv(unique(Birds_fallsw[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/PPSITES.csv", row.names=FALSE) #Write these out to check points if we need to
-write.csv(unique(NOTPPSites[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/NOTPPSITES.csv", row.names=FALSE)
+write.csv(unique(PPSitesOriginal[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/PPSITES.csv", row.names=FALSE) #Write these out to check points if we need to
+write.csv(unique(NOTPPSitesOriginal[,c("SiteCode", "Latitude", "Longitude")]), "/Users/hannahwauchope/Desktop/NOTPPSITES.csv", row.names=FALSE)
 
 #### Prepare Site Matching Data ####
-PPSitesOriginal <- fread(paste0(ResultsFP, "PPSites.csv")) #Read in our data
-NOTPPSitesOriginal <- fread(paste0(ResultsFP, "NOTPPSites.csv"))
+load(file=paste0(ResultsFP, "PPSitesOriginal.RData"))
+load(file=paste0(ResultsFP, "NOTPPSitesOriginal.RData"))
 
 PPSitesOriginal$STATUS_YR <- as.numeric(PPSitesOriginal$STATUS_YR) #Make the status year numeric
 names(PPSitesOriginal)[names(PPSitesOriginal)=="NAME"] <- "PAName" #Change NAME to PANAME to avoid confusion later
@@ -366,7 +365,7 @@ NOTPPSitesOriginal <- merge(NOTPPSitesOriginal, NOTPPSites_MinYearSS, by="SiteSp
 NOTPPSitesOriginal <- merge(NOTPPSitesOriginal, NOTPPSites_MaxYearSS, by="SiteSpecSeason")
 NOTPPSitesOriginal$Treatment <- 0 #Mark that these are untreated sites
 
-AllSites <- as.data.frame(rbind(PPSitesOriginal, NOTPPSitesOriginal, fill=TRUE)) #Bring data together
+AllSites <- as.data.frame(data.table::rbindlist(list(PPSitesOriginal, NOTPPSitesOriginal), fill=TRUE)) #Bring data together
 TheNumbers(subset(AllSites, Treatment==1)) #Count number of sites, species, and populations in each
 TheNumbers(subset(AllSites, Treatment==0))
 
@@ -492,11 +491,11 @@ VariablesForMatchingByYear <- colnames(CorrelationPearson)
 ContinuousVariablesToRemove <- ContinuousVariables[, !colnames(ContinuousVariables) %in% c("SiteSpecSeasonYear", "Treatment", VariablesForMatchingByYear)] #Remove collinear variables
 AllSites <- AllSites[,!colnames(AllSites) %in% colnames(ContinuousVariablesToRemove)]
 
-write.csv(AllSites, paste0(ResultsFP, "AllSites.csv"), row.names = FALSE) #Write out data
+save(AllSites, file = paste0(ResultsFP, "AllSites.RData")) #Write out data
 save(VariablesForMatchingByYear, file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
 
 #Finally, calculate trends of protected populations
-AllSites <- as.data.frame(fread(paste0(ResultsFP, "AllSites.csv"))) #Read in data
+load(file = paste0(ResultsFP, "AllSites.RData")) #Read in data
 PPSites <- subset(AllSites, Treatment==1) #Subset
 NOTPPSites <- subset(AllSites, Treatment==0) #Subet
 load(file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
@@ -552,6 +551,7 @@ TheNumbers(PPSites)
 #Create MD matrices for each designation year
 AllYears <- unique(PPSites$STATUS_YR) #Get all the designation years
 MDYearList <- pbmclapply(AllYears, function(YEAR){
+  print(YEAR)
   PPSitesCovs <- GetMeanCovs(subset(PPSites, Year<= YEAR & STATUS_YR==YEAR)) #Get the means of covariates in years pre designation (protected sites)
   NOTPPSitesCovs <- GetMeanCovs(subset(NOTPPSites, Year<= YEAR)) #Get the means of covariates in years pre designation (unprotected sites)
   
@@ -594,9 +594,9 @@ MD <- matrix(nrow = length(NOTPPSiteNames), ncol = length(PPSiteNames)) #Create 
 rownames(MD) <- NOTPPSiteNames
 colnames(MD) <- PPSiteNames
 
-Spec <- "Actitis hypoleucos" #Used to test a particular species in the below loop
+Spec <- "Anser albifrons" #Used to test a particular species in the below loop
 
-Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){ #Loop through all the protected species in the dataset
+Matching <- pblapply(unique(PPSites$Species), function(Spec){ #Loop through all the protected species in the dataset
   if(file.exists(paste0(ResultsFP, "MatchFinal/Matched", Spec,"CHECK.csv"))){
     return(NULL)
   } #Check if another cluster is working on this species, if so skip
@@ -671,6 +671,10 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){ #Loop th
     }, mc.cores=4)
      
     BeforeSlopes2 <- BeforeSlopes[!sapply(BeforeSlopes, is.null)] #Remove Null cases
+    if(length(BeforeSlopes2)==0){ #If no unprotected sites are left, skip
+      MatchMatrix[,i] <- 10
+      next
+    }
     if(length(unique(sapply(BeforeSlopes2, ncol)))!=1){
       print(paste0("PANIC BEFORESLOPES2 HAS MORE THAN 1 NCOL ", Spec, i))
     }
@@ -687,7 +691,7 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){ #Loop th
     BeforeSlopes3 <- subset(BeforeSlopes2, Class==SlopeClass) #Reduce to only cases that match the slope class of our protected population
     
     if(nrow(BeforeSlopes3)!=0){ #If there is at least one unprotected site left
-      #print(c(SlopeClass, unique(BeforeSlopes3$Class))) #Print the classes (for code checking)
+      print(c(SlopeClass, unique(BeforeSlopes3$Class))) #Print the classes (for code checking)
       FilteredSites <- str_split_fixed(BeforeSlopes3$SiteSpecSeason, "[.]",3)[,2] #Get the site code
     } else {
       FilteredSites <- NULL
@@ -731,6 +735,10 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){ #Loop th
   
   GlobalDistance <- sapply(Greedy, function(x){return(sum(x$MD))}) #Calculate the global distance (i.e. summed distance) for each greedy run 
   Matched <- Greedy[[match(min(GlobalDistance),GlobalDistance)]] #Take the Greedy run with the minimum global distance. This is our matched pairings
+  if(nrow(Matched)==0){ #If there are less than two protected sites, skip this species (And write out a null file to mark that this is finished)
+    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
+    return(NULL)
+  }
   Matched$MatchID <- 1:nrow(Matched) #Assign each protected/unprotected pair a match ID
   Matched$Treatment <- as.character(Matched$Treatment)
   Matched$Control <- as.character(Matched$Control)
@@ -740,7 +748,7 @@ Matching <- rbindlist(pblapply(unique(PPSites$Species), function(Spec){ #Loop th
   Matched <- merge(Matched, SpecAllData, by="SiteCode") #Add the matched values (+ distance, and the MatchID which defines the pairs) to the full dataframe
   write.csv(Matched, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"), row.names = FALSE) #Write out the data
   return(Matched)
-}))
+})
 
 #### FOR MEETING KILL ME LATER ####
 PPSitesCountry <- unique(PPSites[,c("SiteCode","Country")])
@@ -797,144 +805,85 @@ MatchingCovariates <- rbindlist(pbmclapply(unique(MatchingFinal$SpecMatch), func
   return(AllCovs)
 }, mc.cores=ncores))
 
-#MatchingCovariates$Species <- str_split_fixed(MatchingCovariates$SpecMatch, "[.]",2)[,1] #Split back so we have the Species name #I DON'T THINK WE NEED THESE DELETE IF WE DON'T
-#MatchingCovariates$MatchID <- str_split_fixed(MatchingCovariates$SpecMatch, "[.]",2)[,2] #And the match ID
+MatchingCovariates$Species <- str_split_fixed(MatchingCovariates$SpecMatch, "[.]",2)[,1] #Split back so we have the Species name
+MatchingCovariates$MatchID <- str_split_fixed(MatchingCovariates$SpecMatch, "[.]",2)[,2] #And the match ID
 
 Distances <- unique(MatchingFinal[,c("SpecMatch", "MD")]) #Get just the distances from the match final dataset
 MatchingCovariates <- merge(MatchingCovariates, Distances, by="SpecMatch", all=T) #Add to the matching covariates dataset
 
 #Now we can compare the standardised differences in means
-
-AbsDist <- function(dataset){
-  Distance <- rbindlist(lapply(unique(dataset$Species), function(Spec){
-    ok <- as.data.frame(subset(dataset, Species==Spec))
-    ok <- ok[complete.cases(ok$SiteCode),]
-    ok2 <- ok[,colnames(ok) %in% c(VariablesForMatchingByYear, "Treatment")]
-    ok2$MatchID <- ok$MatchID
-    ok2 <- melt(ok2, id.var=c("MatchID", "Treatment"))
-    hey <- dcast(ok2, MatchID + Treatment~variable, value.var="value")
-    hey2 <- rbindlist(lapply(unique(hey$MatchID), function(ID){
-      hey2 <- subset(hey, MatchID==ID)
-      if(nrow(hey2)<2){
-        return(NULL)
-      }
-      hey2 <- as.data.frame(t(as.data.frame(apply(hey2, 2, function(x) diff(as.numeric(x))))))
-      hey2$MatchID <- ID
-      row.names(hey2) <- NULL
-      return(hey2)
-    }))
-    hey3 <- melt(hey2, id.vars="MatchID")
-    hey4 <- dcast(hey3, variable~., mean, value.var="value")
-    hey4$Species <- Spec
-    names(hey4) <- c("Variable", "MeanDist", "Species")
-    return(hey4)
-  }))
-  return(Distance)
-}
 StDiffMean <- function(dataset){
-  #SpecSites <- subset(dataset, Species==Spec)
-  SpecSites <- dataset[complete.cases(dataset$MD),]
+  SpecSites <- dataset
   if(nrow(SpecSites)<=2){
     return(NULL)
   }
   SiteCast <- do.call(cbind,lapply(c(1,0), function(x){ #Get the mean values for each variable in each treatment
-    TheVariables <- as.data.frame(subset(SpecSites, Treatment==x))
-    TheVariables <- TheVariables[,colnames(TheVariables) %in% VariablesForMatchingByYear]
-    TheVariables$Treatment <- NULL
-    TheVariables <- apply(TheVariables, 2, as.numeric)
-    return(as.data.frame(colMeans(TheVariables, na.rm = TRUE)))
+    TheVariables <- as.data.frame(subset(SpecSites, Treatment==x)) #Subset to the treatment
+    TheVariables <- TheVariables[,colnames(TheVariables) %in% VariablesForMatchingByYear] #Reduce to numeric columns
+    TheVariables$Treatment <- NULL #Remove treatment
+    TheVariables <- apply(TheVariables, 2, as.numeric) #Make sure they're all numeric
+    return(as.data.frame(colMeans(TheVariables, na.rm = TRUE))) #Return the column means
   }))
-  names(SiteCast) <- c("Treat", "Cont")
-  SiteCast$MeanDiff <- abs(SiteCast$Treat - SiteCast$Cont)
+  names(SiteCast) <- c("Treat", "Cont") #Add appropriate names
+  SiteCast$MeanDiff <- abs(SiteCast$Treat - SiteCast$Cont) #Find the difference in means between treatment and control
   SiteCastVar <- do.call(cbind,lapply(c(1,0), function(x){ #Get the sd for each variable in each treatment
-    TheVariables <- as.data.frame(subset(SpecSites, Treatment==x))
-    TheVariables <- TheVariables[,colnames(TheVariables) %in% VariablesForMatchingByYear]
-    TheVariables$Treatment <- NULL
-    TheVariables <- apply(TheVariables, 2, as.numeric)
-    return(as.data.frame(colVars(TheVariables, na.rm = TRUE)))
+    TheVariables <- as.data.frame(subset(SpecSites, Treatment==x)) #Susbet to the treatment
+    TheVariables <- TheVariables[,colnames(TheVariables) %in% VariablesForMatchingByYear] #Reduce to numeric columns
+    TheVariables$Treatment <- NULL #Remove treatment
+    TheVariables <- apply(TheVariables, 2, as.numeric) #Make sure they're all numeric
+    return(as.data.frame(colVars(TheVariables, na.rm = TRUE))) #Return the column standard deviations
   }))
   names(SiteCastVar) <- c("Treat", "Cont")
-  SiteCast$VarComp <- sqrt((SiteCastVar$Treat + SiteCastVar$Cont)/2)
-  SiteCast$d <- SiteCast$MeanDiff/SiteCast$VarComp
-  SiteCast[is.na(SiteCast)] <- 0
-  SiteCast$Cov <- row.names(SiteCast)
-  SiteCast <- SiteCast[,c(5:6)]
-  #SiteCast$Species <- Spec
-  #SiteCast <- dcast(SiteCast, Cov~Match, value.var="d")
-  #return(mean(SiteCast$Match))
+  SiteCast$VarComp <- sqrt((SiteCastVar$Treat + SiteCastVar$Cont)/2) #Get standard deviation
+  SiteCast$d <- SiteCast$MeanDiff/SiteCast$VarComp #Get standardised dsitance (mean/sd)
+  SiteCast[is.na(SiteCast)] <- 0 #Change any NA's to zeros (occurs in cases where variable is 0 in all cases)
+  SiteCast$Cov <- row.names(SiteCast) #Add variable names
+  SiteCast <- SiteCast[,c(5:6)] #Just keep SDiM and variable name
   return(SiteCast)
 }
+
 CompareMatching <- function(dataset, DiffThresh, MatchType){
   DeleteOldFiles <- c(list.files(paste0(ResultsFP, "Summaries/", MatchType), full.names=TRUE), list.files(paste0(ResultsFP, "MatchData/", MatchType), full.names=TRUE))
   sapply(DeleteOldFiles, unlink)
   Comp <- pbmclapply(unique(dataset$Species), function(i){
     print(i)
-    MatchingSub <- subset(dataset, Species==i)
-    MatchingSub <- MatchingSub[!is.na(MatchingSub$MD),]
-    if(nrow(MatchingSub)<=4){
+    MatchingSub <- subset(dataset, Species==i) #Subset to the relevant species 
+    if(nrow(MatchingSub)<=4){ #Kill the species with less than 2 matched pairs
       return(NULL)
     }
-    Iteration <- 1
-    TheDistance <- StDiffMean(MatchingSub)
-    TheDistance$Iteration <- Iteration
-    Threshold <- subset(TheDistance, d<DiffThresh)
-    if(nrow(Threshold)!=0){
-      ThresholdCast <- dcast(Threshold, Iteration~Cov, value.var="d")
-      ThresholdCast <- ThresholdCast[complete.cases(ThresholdCast),]
-      if(ncol(ThresholdCast)!=length(VariablesForMatchingByYear)){
-        ThresholdCast <- data.frame()
-      }
-    } else {
-      ThresholdCast <- data.frame()
-    }
+
+    TheDistance <- StDiffMean(MatchingSub) #Calculate the standardised difference in means for each covariate
+    Threshold <- subset(TheDistance, d<DiffThresh) #Subset to all covariates that are less than the "difference threshold"
     
-    while(nrow(ThresholdCast)==0 & nrow(MatchingSub)>4){
+    while(nrow(Threshold)!=length(VariablesForMatchingByYear) & nrow(MatchingSub)>4){ #While not all variables have SDiM below the threshold
       #print(Iteration)
-      MAX <- max(MatchingSub$MD)
-      MatchingSub <- subset(MatchingSub, MD!=MAX)
-      TheDistance <- StDiffMean(MatchingSub)
-      TheDistance$Iteration <- Iteration+1
-      Iteration <- Iteration+1
+      MAX <- max(MatchingSub$MD) #Get the biggest MD distance
+      MatchingSub <- subset(MatchingSub, MD!=MAX) #Remove the link that has that distance
+      TheDistance <- StDiffMean(MatchingSub) #Recalculate the SDiM
       Threshold <- subset(TheDistance, d<DiffThresh)
-      if(nrow(Threshold)==0){
-        ThresholdCast <- data.frame()
-        next
-      }
-      ThresholdCast <- dcast(Threshold, Iteration~Cov, value.var="d")
-      ThresholdCast <- ThresholdCast[complete.cases(ThresholdCast),]
-      if(ncol(ThresholdCast)!=length(VariablesForMatchingByYear)){
-        ThresholdCast <- data.frame()
-      }
     }
-    if(nrow(ThresholdCast)>0){
-      ThresholdCast <- as.data.frame(t(ThresholdCast))
-      names(ThresholdCast) <- "StDiff"
-      ThresholdCast$Variable <- row.names(ThresholdCast)
-      AbsoluteDist <- as.data.frame(AbsDist(MatchingSub))
-      Summary <- merge(ThresholdCast, AbsoluteDist, by="Variable")
-      write.csv(Summary, paste0(ResultsFP, "Summaries/Final/Summary_", i, ".csv"), row.names=FALSE)
-      write.csv(MatchingSub, paste0(ResultsFP, "MatchData/Final/MatchData_", i, ".csv"), row.names=FALSE)
-      
-      return(list(Summary, MatchingSub))
-    } else {
-      return(NULL)
-    }
+    if(nrow(Threshold)==length(VariablesForMatchingByYear) & nrow(MatchingSub)>=4){ #If we reached a point where all covariates were below the threshold
+      names(Threshold) <- c("StDiff", "Variable") #rename  to StDiff
+      Threshold$Species <- i
+      write.csv(Threshold, paste0(ResultsFP, "Summaries/Final/Summary_", i, ".csv"), row.names=FALSE) #Save stdiffs in means
+      write.csv(MatchingSub, paste0(ResultsFP, "MatchData/Final/MatchData_", i, ".csv"), row.names=FALSE) #Save actual datasets
+      }
   }, mc.cores=ncores)
 }
-CompMatch <- CompareMatching(MatchingCovariates, 0.25, "Final") #Run through and iteratively remove matches until we have the matched set for each species
+CompareMatching(MatchingCovariates, 0.25, "Final") #Run through and iteratively remove matches until we have the matched set for each species
 
 SummariesFinal <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "Summaries/Final/"), full.names=TRUE), fread)) #Read in that summary material
-names(SummariesFinal) <- c("Variable", "StDiff", "MeanDist", "Species")
-MatchDataFinal <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "MatchData/Final/"), full.names=TRUE), fread))
-MatchingFinalCleaned <- MatchingFinal[MatchingFinal$SpecMatch %in% MatchDataFinal$SpecMatch,]
+MatchCovariateMeans <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "MatchData/Final/"), full.names=TRUE), fread))
+MatchingFinalCleaned <- MatchingFinal[MatchingFinal$SpecMatch %in% MatchCovariateMeans$SpecMatch,]
 
-save(MatchingFinalCleaned, file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
-
-load(file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
+#save(MatchingFinalCleaned, file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
+#load(file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
 
 TheNumbers(subset(MatchingFinalCleaned, Treatment==1))
 TheNumbers(subset(MatchingFinalCleaned, Treatment==0))
-TheNumbers(PPSites)
+
+load(file=paste0(ResultsFP, "PPSitesBA.RData")) #Read in the original Protected data
+TheNumbers(PPSitesBA)
 TheNumbers(NOTPPSites)
 
 #Extract species stats for comparison
@@ -950,24 +899,24 @@ TaxaData <- function(Dataset){
   AllSitesStats <- merge(AllSitesStats, SpecStats, by="Species")
   AllSitesStatsFamSite <- unique(AllSitesStats[,c("Order", "Family", "SiteCode", "Treatment")])
   FamiliesSite <- dcast(AllSitesStatsFamSite, Order + Family~Treatment, length, value.var="SiteCode")
-  AllSitesStatsFamSpec <- unique(AllSitesStats[,c("Order", "Family","Genus", "Species", "Treatment")])
+  AllSitesStatsFamSpec <- unique(AllSitesStats[,c("Order", "Family","Species")])
   FamiliesSpec <- dcast(AllSitesStatsFamSpec, Order + Family~., length, value.var="Species")
-  AllSitesStatsFamGen <- unique(AllSitesStats[,c("Order", "Family", "Genus", "Treatment")])
+  AllSitesStatsFamGen <- unique(AllSitesStats[,c("Order", "Family", "Genus")])
   FamiliesGen <- dcast(AllSitesStatsFamGen, Order + Family~., length, value.var="Genus")
   FamilyData <- merge(FamiliesSite, FamiliesGen, all=TRUE)
   names(FamilyData) <- c("Order", "Family", "UnprotectedSites", "ProtectedSites", "Genera")
   FamilyData <- merge(FamilyData, FamiliesSpec, all=TRUE)
   names(FamilyData) <- c("Order", "Family", "UnprotectedSites", "ProtectedSites", "Genera", "Species")
-  NOrder <- length(unique(FamilyData$Order))
-  NFamily <- length(unique(FamilyData$Family))
-  NGenus <- length(unique(AllSitesStatsFamSpec$Genus))
-  NSpecies <- length(unique(AllSitesStatsFamSpec$Species))
+  NOrder <- length(unique(AllSitesStats$Order))
+  NFamily <- length(unique(AllSitesStats$Family))
+  NGenus <- length(unique(AllSitesStats$Genus))
+  NSpecies <- length(unique(AllSitesStats$Species))
   return(list(FamilyData, NOrder,NFamily,NGenus, NSpecies))
 }
-AllSites2 <- rbind(PPSites[,c("SiteCode", "Species", "Treatment")], NOTPPSites[,c("SiteCode", "Species", "Treatment")])
+AllSites2 <- rbind(PPSitesBA[,c("SiteCode", "Species", "Treatment")], NOTPPSites[,c("SiteCode", "Species", "Treatment")])
 AllTaxa <- TaxaData(AllSites2)
 AllTaxa
-MatchTaxa <- TaxaData(MatchDataFinal)
+MatchTaxa <- TaxaData(MatchCovariateMeans)
 MatchTaxa
 
 BothTaxa <- merge(AllTaxa[[1]], MatchTaxa[[1]], by=c("Order", "Family"), all=TRUE)
@@ -998,7 +947,7 @@ library(maps)
 library(ggalt)
 
 MapVersion <- "Matched" #"Filtered" "Matched
-for(MapVersion in c("Matched", "Filtered", "NotFiltered")){
+for(MapVersion in c("Matched", "Filtered")){ #"NotFiltered"
   
   if(MapVersion=="NotFiltered"){
     NOTPPSitesNOTFILTERED <- fread(paste0(ResultsFP, "NOTPPSites.csv"))
@@ -1018,7 +967,7 @@ for(MapVersion in c("Matched", "Filtered", "NotFiltered")){
     MapSites <- rbind(PPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")], NOTPPSitesNOTFILTERED[,c("SiteCode", "Latitude", "Longitude", "Treatment")])
   } 
   if(MapVersion=="Filtered"){
-    load(file=paste0(ResultsFP, "PPSites.RData"))
+    load(file=paste0(ResultsFP, "PPSitesBA.RData"))
     load(file=paste0(ResultsFP, "NOTPPSites.RData"))
     #write.csv(unique(PPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/PPFiltered.csv", row.names=FALSE)
     #write.csv(unique(NOTPPSites[,c("SiteCode", "Latitude", "Longitude", "Treatment")]), "/Users/hannahwauchope/Desktop/birdtest/NOTPPFiltered.csv", row.names=FALSE)
@@ -1118,14 +1067,15 @@ if(ncol(DistanceValues)==1){
     MatchMatrix[c(names(DistanceValues)), i] <- DistanceValues
     MatchMatrix[!rownames(MatchMatrix) %in% UnProtCovs$SiteCode,i] <- 10
   }
-} else {
+}
 
 #### METT Testing ####
 METT <- read.csv("/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/METT/Tbl_Spatial.csv")
-Ok <- merge(PPSites, METT, by.x="WDPAID", by.y="WDPA.ID")
-Ok2 <- unique(Ok[,c("SiteCode", "ISO3", "Country", "WDPAID")])
+METTMerge <- unique(merge(PPSitesBA, METT, by.x="WDPAID", by.y="WDPA.ID")[,c("SiteCode", "ISO3", "Country", "WDPAID")])
+length(unique(METTMerge2$SiteCode))
+length(unique(METTMerge$WDPAID))
 
-#Lol no METT data. 
+#Ok no METT data. 
 
 #### Distance Testing ####
 AllDistances2 <- subset(AllDistances, PointDist>0)
