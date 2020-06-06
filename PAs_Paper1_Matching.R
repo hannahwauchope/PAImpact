@@ -56,13 +56,16 @@ if(cluster==TRUE){
   library(mice)
   library(StatMatch)
   library(lme4)
+  library(pdist)
   
   ResultsFP <- "/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Chapter3/Analysis/"
   DataFP <- "/Users/hannahwauchope/Documents/OneDrive - University Of Cambridge/PhD/Data/"
   ncores <- 6 
 }
 
-load(file=paste0(DataFP, "WaterbirdData_Tatsuya/FullDataSet_Edits/Hannah_Consolidation/Spec6_Cov.RData"))
+ZeroThresh <- 0.6
+
+#load(file=paste0(DataFP, "WaterbirdData_Tatsuya/FullDataSet_Edits/Hannah_Consolidation/Spec6_Cov.RData"))
 
 GetMeanCovs <- function(dataset){
   Spec6_Shrink <- dataset
@@ -229,6 +232,9 @@ AllDistances <- rbindlist(lapply(c(5000,10000,15000, 20000,25000), function(RunF
 }))
 
 NOTPPSitesOriginal <- Spec6_Cov[Spec6_Cov$SiteCode %in% subset(AllDistances, PointDist>1000)$SiteCode,] #Subset our main dataset to sites over 1km from PAs
+#Just dec to feb, to make sure the covariates are appropriate at all times down the line (we lose very little)
+NOTPPSitesOriginal <- subset(NOTPPSitesOriginal, Season=="DectoFeb")
+
 save(NOTPPSitesOriginal, file=paste0(ResultsFP, "NOTPPSitesOriginal.RData"))
 
 ##Clean Protected Sites
@@ -319,6 +325,9 @@ PA_Counts <- merge(AllSites, Spec6_Cov, by=c("SiteCode")) #Merge with the count 
 PA_Counts[,c("MinYear", "MaxYear")] <- NULL #Remove the min year and max year (so these were no longer necessary to calculate, but leaving in as they do no harm)
 PA_Counts$SiteSpec <- paste0(PA_Counts$Species, ".", PA_Counts$SiteCode) #Make a "SiteSpec" combined value, so we can track actual counts for species, not just sites
 
+#Just dec to feb, to make sure the covariates are appropriate at all times down the line (we lose very little)
+PA_Counts <- subset(PA_Counts, Season=="DectoFeb")
+
 PA_Counts_MinYearSS <- dcast(PA_Counts, SiteSpec~., min, value.var="Year") #Cast to get minimum year for each sitespec
 names(PA_Counts_MinYearSS) <- c("SiteSpec", "MinYearSS") #Rename
 PA_Counts_MaxYearSS <- dcast(PA_Counts, SiteSpec~., max, value.var="Year") #Cast to get maximum year
@@ -349,6 +358,9 @@ write.csv(unique(NOTPPSitesOriginal[,c("SiteCode", "Latitude", "Longitude")]), "
 load(file=paste0(ResultsFP, "PPSitesOriginal.RData"))
 load(file=paste0(ResultsFP, "NOTPPSitesOriginal.RData"))
 
+if(length(unique(PPSitesOriginal$SiteSpec))!= length(unique(PPSitesOriginal$SiteSpecSeason))){stop("sitespec and sitespecseason don't match (PPSites)")}
+if(length(unique(NOTPPSitesOriginal$SiteSpec))!= length(unique(NOTPPSitesOriginal$SiteSpecSeason))){stop("sitespec and sitespecseason don't match (PPSites)")}
+
 PPSitesOriginal$STATUS_YR <- as.numeric(PPSitesOriginal$STATUS_YR) #Make the status year numeric
 names(PPSitesOriginal)[names(PPSitesOriginal)=="NAME"] <- "PAName" #Change NAME to PANAME to avoid confusion later
 PPSitesOriginal$BeforeStatYears <- (PPSitesOriginal$STATUS_YR-PPSitesOriginal$MinYearSS)+1 #Get the number of years before designation. We INCLUDE the year of designation with the before.
@@ -369,12 +381,7 @@ AllSites <- as.data.frame(data.table::rbindlist(list(PPSitesOriginal, NOTPPSites
 TheNumbers(subset(AllSites, Treatment==1)) #Count number of sites, species, and populations in each
 TheNumbers(subset(AllSites, Treatment==0))
 
-#Just dec to feb, to make sure the covariates are appropriate at all times (we lose very little)
-AllSites <- subset(AllSites, Season=="DectoFeb")
-TheNumbers(subset(AllSites, Treatment==1))
-TheNumbers(subset(AllSites, Treatment==0))
-
-#Remove all zero counts
+#Remove cases of all zeros
 RemoveZeros <- dcast(AllSites, SiteSpecSeason~., sum, value.var="Count")
 RemoveZeros <- subset(RemoveZeros, .==0)
 AllSites <- AllSites[!AllSites$SiteSpecSeason %in% RemoveZeros$SiteSpecSeason,]
@@ -420,7 +427,22 @@ AllSitesUniqueMax$Diff <- (AllSitesUniqueMax$.-AllSitesUniqueMin$.)+1 #Find dist
 AllSitesUniqueMax <- subset(AllSitesUniqueMax, Diff>=(Buffer*2)) #Keep only those with at least ten years spanned (just to cut it down, we'll do further filters later)
 AllSites <- AllSites[AllSites$SiteSpecSeason %in% AllSitesUniqueMax$SiteSpecSeason,] #Cut our dataset to these site species
 
-PPSites <- subset(AllSites[AllSites$Treatment==1,], AfterStatYears>=Buffer & BeforeStatYears>=Buffer & BeforeStat>=NYearBuffer & AfterStat>=NYearBuffer) #For treatment sites, we can cut to exactly number of years before and after designation
+PPSites <- subset(AllSites[AllSites$Treatment==1,]) #For treatment sites, we can cut to exactly number of years before and after designation
+
+PPSitesNYears <- dcast(PPSites, SiteSpec~BeforeAfterStat, length, value.var="Count")
+PPSitesNYears <- subset(PPSitesNYears, AfterStat>=NYearBuffer & BeforeStat>=NYearBuffer)
+PPSites <- PPSites[PPSites$SiteSpec %in% PPSitesNYears$SiteSpec,]
+
+PPSitesMin <- dcast(PPSites, SiteSpec + STATUS_YR ~., min, value.var="Year")
+PPSitesMin$Diff <- abs(PPSitesMin$STATUS_YR-PPSitesMin$.)
+PPSitesMin <- subset(PPSitesMin, Diff>=Buffer)
+PPSites <- PPSites[PPSites$SiteSpec %in% PPSitesMin$SiteSpec,]
+
+PPSitesMax <- dcast(PPSites, SiteSpec + STATUS_YR ~., max, value.var="Year")
+PPSitesMax$Diff <- abs(PPSitesMax$STATUS_YR-PPSitesMax$.)
+PPSitesMax <- subset(PPSitesMax, Diff>=Buffer)
+PPSites <- PPSites[PPSites$SiteSpec %in% PPSitesMax$SiteSpec,]
+
 NOTPPSites <- subset(AllSites, Treatment==0) #Add to unprotected sites
 
 TheNumbers(PPSites)
@@ -491,22 +513,26 @@ VariablesForMatchingByYear <- colnames(CorrelationPearson)
 ContinuousVariablesToRemove <- ContinuousVariables[, !colnames(ContinuousVariables) %in% c("SiteSpecSeasonYear", "Treatment", VariablesForMatchingByYear)] #Remove collinear variables
 AllSites <- AllSites[,!colnames(AllSites) %in% colnames(ContinuousVariablesToRemove)]
 
-save(AllSites, file = paste0(ResultsFP, "AllSites.RData")) #Write out data
 save(VariablesForMatchingByYear, file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
 
 #Finally, calculate trends of protected populations
-load(file = paste0(ResultsFP, "AllSites.RData")) #Read in data
 PPSites <- subset(AllSites, Treatment==1) #Subset
 NOTPPSites <- subset(AllSites, Treatment==0) #Subet
-load(file=paste0(ResultsFP, "VariablesForMatchingByYear.RData"))
-
-TheNumbers <- function(Dataset){
-  Dataset <- as.data.frame(Dataset)
-  sapply(c('SiteCode', 'Species', 'SiteSpecSeason'), function(x) length(unique(Dataset[,c(x)])))
-} #Little function to calculate number of sites, species and populations in each dataset
 
 ### Calculate direction of trends
 PPSites$BA <- ifelse(PPSites$Year>PPSites$STATUS_YR, 1, 0) #Make a column with 0s for years before designation and 1 for years after
+RemoveZeros <- dcast(PPSites, SiteSpec~BA, length, value.var="Count")
+RemoveZeros2 <- dcast(subset(PPSites, Count==0), SiteSpec~BA, length, value.var="Count")
+names(RemoveZeros) <- c("SiteSpec", "Before", "After")
+names(RemoveZeros2) <- c("SiteSpec", "BeforeZero", "AfterZero")
+RemoveZeros <- merge(RemoveZeros, RemoveZeros2, by="SiteSpec", all=TRUE)
+RemoveZeros[is.na(RemoveZeros)] <- 0
+RemoveZeros$BeforeProp <- RemoveZeros$BeforeZero/RemoveZeros$Before
+RemoveZeros$AfterProp <- RemoveZeros$AfterZero/RemoveZeros$After
+RemoveZerosSub <- subset(RemoveZeros, BeforeProp<ZeroThresh | AfterProp<ZeroThresh)
+
+PPSites <- PPSites[PPSites$SiteSpec %in% RemoveZerosSub$SiteSpec,]
+
 PPSitesBefore <- subset(PPSites, BA==0) #Subset to just years before designation
 BeforeSlopes <- pbmclapply(unique(PPSitesBefore$SiteSpecSeason), function(SS){ #Loop through the populations
   BeforeDat <- subset(PPSitesBefore, SiteSpecSeason==SS)[,c("Count", "Year", "Hours", "Dataset")] #Subset to this population
@@ -538,6 +564,9 @@ PPSites <- merge(PPSites, BeforeSlopes2, by.x="SiteSpecSeason", by.y="SS") #Add 
 TheNumbers(PPSites)
 TheNumbers(NOTPPSites)
 
+ClassCheck <- dcast(unique(PPSites[,c("SiteSpecSeason", "Class")]), SiteSpecSeason~., length, value.var="Class")
+if(nrow(subset(ClassCheck, .==2))>0){stop("Some Site Spec have multiple classes!!!")}
+
 PPSitesBA <- PPSites
 save(PPSitesBA, file=paste0(ResultsFP, "PPSitesBA.RData")) #This is our full before/after dataset
 
@@ -547,13 +576,27 @@ PPSitesDCCast <- dcast(PPSitesDC, STATUS_YR~., length, value.var="SiteCode") #Ca
 PPSitesDCCast1 <- subset(PPSitesDCCast, .==1) #Get cases with only one site
 PPSites <- PPSites[!PPSites$STATUS_YR %in% PPSitesDCCast1$STATUS_YR,] #Remove these
 TheNumbers(PPSites)
-
-#Create MD matrices for each designation year
 AllYears <- unique(PPSites$STATUS_YR) #Get all the designation years
+
+#Get unprotected data
+UnprotData <- pbmclapply(AllYears, function(YEAR){
+  print(YEAR)
+  NOTPPSitesSub <- subset(NOTPPSites, Year <= YEAR & Year>=(YEAR-9))
+  NOTPPSitesSubCheckYears <- subset(NOTPPSitesSub, Year>=(YEAR-4))
+  NOTPPSitesSubCheckYears <- dcast(NOTPPSitesSubCheckYears, SiteCode+Species~., length, value.var="Year")
+  NOTPPSitesSubCheckYears <- subset(NOTPPSitesSubCheckYears, .>=3)
+  NOTPPSitesSub <- NOTPPSitesSub[NOTPPSitesSub$SiteCode %in% NOTPPSitesSubCheckYears$SiteCode,]
+  NOTPPSitesCovs <- GetMeanCovs(NOTPPSitesSub) #Get the means of covariates in years pre designation (unprotected sites)
+  save(NOTPPSitesCovs, file=paste0(ResultsFP, "UnprotectedCovariates/NOTPPSiteCovs_", YEAR, ".RData"))
+  return("Done")
+})
+  
+#Create MD matrices for each designation year
 MDYearList <- pbmclapply(AllYears, function(YEAR){
   print(YEAR)
-  PPSitesCovs <- GetMeanCovs(subset(PPSites, Year<= YEAR & STATUS_YR==YEAR)) #Get the means of covariates in years pre designation (protected sites)
-  NOTPPSitesCovs <- GetMeanCovs(subset(NOTPPSites, Year<= YEAR)) #Get the means of covariates in years pre designation (unprotected sites)
+  PPSitesSub <- subset(PPSites, Year <= YEAR & STATUS_YR==YEAR & Year>=(YEAR-9))
+  PPSitesCovs <- GetMeanCovs(PPSitesSub) #Get the means of covariates in years pre designation (protected sites)
+  load(file=paste0(ResultsFP, "UnprotectedCovariates/NOTPPSiteCovs_", YEAR, ".RData"))#Get the means of covariates in years pre designation (unprotected sites)
   
   CheckForZeros <- rbind(PPSitesCovs, NOTPPSitesCovs) #Check for any covariates where there are zeros across the board (This breaks mahalanobis distance)
   CheckForZeros <- as.data.frame(t(as.data.frame(t(colSums(CheckForZeros[,colnames(CheckForZeros) %in% VariablesForMatchingByYear]))))) #Get sum of each variable
@@ -568,10 +611,45 @@ MDYearList <- pbmclapply(AllYears, function(YEAR){
   MDScale <- scale(MD,center=rep(0.5, ncol(MD)), scale=rep(10, ncol(MD))) #Scale values
   return(MDScale)
 }, mc.cores=ncores)
-
 names(MDYearList) <- AllYears #Give each matrix the name of a year
 
+#Create propensity score matrices for each designation year
+PSYearList <- pbmclapply(AllYears, function(YEAR){
+  print(YEAR)
+  PPSitesSub <- subset(PPSites, Year <= YEAR & STATUS_YR==YEAR & Year>=(YEAR-9))
+  PPSitesCovs <- GetMeanCovs(PPSitesSub) #Get the means of covariates in years pre designation (protected sites)
+  load(file=paste0(ResultsFP, "UnprotectedCovariates/NOTPPSiteCovs_", YEAR, ".RData"))#Get the means of covariates in years pre designation (unprotected sites)
+  
+  CheckForZeros <- rbind(PPSitesCovs, NOTPPSitesCovs) #Check for any covariates where there are zeros across the board (This breaks mahalanobis distance)
+  CheckForZeros <- as.data.frame(t(as.data.frame(t(colSums(CheckForZeros[,colnames(CheckForZeros) %in% VariablesForMatchingByYear]))))) #Get sum of each variable
+  CheckForZeros$Var <- row.names(CheckForZeros) #Add rownames
+  CheckForZeros <- subset(CheckForZeros, V1==0) #Reduce to only cases where the sum is zero
+  PPSitesCovs <- PPSitesCovs[!colnames(PPSitesCovs) %in% CheckForZeros$Var] #Remove these variables
+  NOTPPSitesCovs <- NOTPPSitesCovs[!colnames(NOTPPSitesCovs) %in% CheckForZeros$Var] #Remove these variables
+  
+  PPSitesCovs$Treatment <- 1
+  NOTPPSitesCovs$Treatment <- 0
+  AllData <- rbind(NOTPPSitesCovs, PPSitesCovs)
+  AllData <- cbind(AllData[,c("SiteCode", "Treatment")], AllData[, colnames(AllData) %in% VariablesForMatchingByYear])
+  f <- as.formula(paste("Treatment", paste(c(names(AllData)[c(3:ncol(AllData))]), collapse = " + "), sep = " ~ "))
+
+  PScoresModel <- glm(f, family = binomial("logit"), data = AllData)
+  
+  AllData$PS <- PScoresModel$fitted.values
+  PPSitesCovsPS <- subset(AllData, Treatment==1)
+  NOTPPSitesCovsPS <- subset(AllData, Treatment==0)
+  
+  PS <- outer(NOTPPSitesCovsPS$PS, PPSitesCovsPS$PS, FUN="-")
+  PS <- abs(PS)
+  rownames(PS) <- NOTPPSitesCovsPS$SiteCode
+  colnames(PS) <- PPSitesCovsPS$SiteCode
+  PSScale <- scale(PS,center=rep(0.5, ncol(PS)), scale=rep(10, ncol(PS))) #Scale values
+  return(PSScale)
+}, mc.cores=ncores)
+names(PSYearList) <- AllYears #Give each matrix the name of a year
+
 #Save
+save(PSYearList, file=paste0(ResultsFP, "PSYearList.RData"))
 save(MDYearList, file=paste0(ResultsFP, "MDYearList.RData"))
 save(PPSites, file=paste0(ResultsFP, "PPSites.RData"))
 save(NOTPPSites, file=paste0(ResultsFP, "NOTPPSites.RData"))
@@ -579,175 +657,240 @@ save(NOTPPSites, file=paste0(ResultsFP, "NOTPPSites.RData"))
 #### Conduct Matching #### 
 load(file=paste0(ResultsFP, "VariablesForMatchingByYear.RData")) #Load files
 load(file=paste0(ResultsFP, "MDYearList.RData"))
+load(file=paste0(ResultsFP, "PSYearList.RData"))
 load(file=paste0(ResultsFP, "PPSites.RData"))
 load(file=paste0(ResultsFP, "NOTPPSites.RData"))
 TheNumbers <- function(Dataset){
   Dataset <- as.data.frame(Dataset)
   sapply(c('SiteCode', 'Species', 'SiteSpecSeason'), function(x) length(unique(Dataset[,c(x)])))
 } #This is just a function to output and count # sites, species and site*species combinations
+GetMeanCovs <- function(dataset){
+  Spec6_Shrink <- dataset
+  Spec6_Shrink[,c("Season", "Species", "Order", "Family", "Genus", "Count", "MigCode")] <- NULL
+  
+  Mode <- function(x) {
+    ux <- unique(x)
+    ux[which.max(tabulate(match(x, ux)))]
+  }
+  
+  Range <- function(x) {
+    max(x) - min(x)
+  }
+  
+  variables <- VariablesForMatchingByYear
+  variables <- variables[!variables %in% c("SW", "Travel", "Slope", "GovMean")]
+  Spec6_ShrinkVariables <- Spec6_Shrink[colnames(Spec6_Shrink) %in% variables]
+  if(nrow(Spec6_ShrinkVariables)==1){
+    Spec6_ShrinkVariables <- as.data.frame(t(as.data.frame(apply(Spec6_ShrinkVariables, 2, function(x) as.numeric(as.character(x))))))
+    row.names(Spec6_ShrinkVariables) <- NULL
+  } else {
+    Spec6_ShrinkVariables <- as.data.frame(apply(Spec6_ShrinkVariables, 2, function(x) as.numeric(as.character(x))))
+  }
+  
+  Spec6_ShrinkVariables$SiteCode <- Spec6_Shrink$SiteCode
+  staticvariables <- c("ISO3", "Country", "GeoRegion", "GeoSubRegion", "SW", "LOTW", "Travel", "Slope", "GovMean")
+  SitesCovCast <- dcast(Spec6_Shrink, SiteCode ~ ., Mode, value.var="Anthrome")
+  names(SitesCovCast) <- c("SiteCode", "Anthrome")
+  SitesCovCast <- cbind(SitesCovCast, do.call(cbind, pblapply(variables, function(x){
+    SitesCovCast <- dcast(Spec6_ShrinkVariables, SiteCode ~ ., mean, value.var=x, na.rm = TRUE)
+    names(SitesCovCast) <- c("SiteCode", x)
+    return(as.data.frame(SitesCovCast)[2])
+  })))
+  SitesCovStatic <- unique(Spec6_Shrink[,c("SiteCode", staticvariables)])
+  SitesCovCast <- merge(SitesCovCast, SitesCovStatic, by="SiteCode")
+  SitesCovCast$AnthRound <- as.factor(round_any(as.numeric(as.character(SitesCovCast$Anthrome)), 10))
+  
+  return(SitesCovCast)
+}
 
-#Create empty MD matrix of all sites
+#Create empty matrix of all sites
 PPSiteNames <- unique(PPSites$SiteCode) #Get the names of all the protected sites
 NOTPPSiteNames <- unique(NOTPPSites$SiteCode) #Ditto unprotected sites
 
-MD <- matrix(nrow = length(NOTPPSiteNames), ncol = length(PPSiteNames)) #Create an empty matrix, with protected sites as column names, and unprotected sites as rownames. This will be used to create a distance matrix for each species in the loop below
-rownames(MD) <- NOTPPSiteNames
-colnames(MD) <- PPSiteNames
+Empty <- matrix(nrow = length(NOTPPSiteNames), ncol = length(PPSiteNames)) #Create an empty matrix, with protected sites as column names, and unprotected sites as rownames. This will be used to create a distance matrix for each species in the loop below
+rownames(Empty) <- NOTPPSiteNames
+colnames(Empty) <- PPSiteNames
 
-Spec <- "Anser albifrons" #Used to test a particular species in the below loop
+Spec <- "Actitis hypoleucos" #Used to test a particular species in the below loop
 
-Matching <- pblapply(unique(PPSites$Species), function(Spec){ #Loop through all the protected species in the dataset
-  if(file.exists(paste0(ResultsFP, "MatchFinal/Matched", Spec,"CHECK.csv"))){
-    return(NULL)
-  } #Check if another cluster is working on this species, if so skip
-  write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,"CHECK.csv")) #Mark that this cluster is working on the species
-  
-  PPSitesSpec <- subset(PPSites, Species==Spec) #Subset the PPSites dataset (with counts at all sites for all protected species) to the relevant species
-  if(length(unique(PPSitesSpec$SiteCode))<2){ #If there are less than two protected sites, skip this species (And write out a null file to mark that this is finished)
-    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
-    return(NULL)
-  }
-  
-  NOTPPSitesSpec <- subset(NOTPPSites, Species==Spec) #Subset the unprotected counts to the relevant species
-  SpecAllData <- data.table::rbindlist(list(PPSitesSpec, NOTPPSitesSpec), use.names=TRUE, fill=TRUE) #Combine protected and unprotected data together, filling unoverlapping columns with NAs 
-
-  MatchMatrix <- as.data.frame(MD[,colnames(MD) %in% PPSitesSpec$SiteCode]) #Subset the empty matrix (Created outside the loop) to only the relevant protected site columns
-  MatchMatrix <- MatchMatrix[rownames(MatchMatrix) %in% NOTPPSitesSpec$SiteCode,] #Ditto unprotected site rows 
-  
-  #Now, we go through each protected site individually, first filtering out any sites that arent exact matches and then populating the MD matrix with the relevant distances from the MDYearList based on that protected site's designation year
-  for(i in colnames(MatchMatrix)){ #I.e. for each protected population (because we've subset to both one site and one species)
-    #print(i)
-    StatYr <- unique(subset(PPSitesSpec, SiteCode==i)$STATUS_YR) #Get the designation year
-    ProtCovs <- GetMeanCovs(subset(PPSitesSpec, SiteCode==i & Year<= StatYr)) #Get the mean covariate values for the protected population for all years pre-designation
+Matching <- function(MD_PS, YearList, ZeroThresh){
+  pblapply(unique(PPSites$Species), function(Spec){ #Loop through all the protected species in the dataset
+    print(Spec)
+    if(file.exists(paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Matched", Spec,"CHECK.csv"))){
+      return(NULL)
+    } #Check if another cluster is working on this species, if so skip
+    write.csv(NULL, paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Matched", Spec,"CHECK.csv")) #Mark that this cluster is working on the species
     
-    #We will exact match on these three covariates
-    Anth <- as.character(ProtCovs$AnthRound) #Get the anthrome value for predesignation
-    Region <- as.character(ProtCovs$GeoRegion) #Get the region value
-    SlopeClass <- unique(subset(PPSitesSpec, SiteCode==i)$Class) #Get the "Class" value (i.e. whether the pre-designation trend is positive, negative or stable)
-    
-    #Then get the unprotected data
-    if(nrow(subset(NOTPPSitesSpec, Year<= StatYr))==0){#If there are no unprotected sites with survey years before the designation year, skip.
-      MatchMatrix[,i] <- 10
-      next
-    } 
-    UnProtCovs <- GetMeanCovs(subset(NOTPPSitesSpec, Year<= StatYr)) #Get the mean covariate values for predesignation years for unprotected sites
-    NotProtSub <- subset(UnProtCovs, AnthRound==Anth & GeoRegion==Region) #Subset these sites to only cases with the same AnthRound and GeoRegion as the protected site
-    NotProtSub <- NOTPPSitesSpec[NOTPPSitesSpec$SiteCode %in% NotProtSub$SiteCode,] #Pull in the full count data for the filtered sites
-    NotProtSub$BeforeStatYears <- (StatYr-NotProtSub$MinYearSS)+1 #Find how far the earliest survey year is from the designation year
-    NotProtSub$AfterStatYears <- (NotProtSub$MaxYearSS-StatYr) #Ditto the latest survey year
-    NotProtSub <- subset(NotProtSub, BeforeStatYears>=5 & AfterStatYears>=5) #Subset to cases where we cover at least 5 years before and after
-    if(nrow(NotProtSub)==0){ #If no unprotected sites are left, skip
-      MatchMatrix[,i] <- 10
-      next
-    }
-    NotProtSub$BA <- ifelse(NotProtSub$Year<=StatYr, 0, 1) #Mark rows as before or after designation
-    NotProtSubYears <- dcast(NotProtSub, SiteCode~BA, length, value.var="Year") #Cast to find number of years before and after designation
-    names(NotProtSubYears) <- c("SiteCode", "Before", "After") #Rename
-    NotProtSubYears <- subset(NotProtSubYears, Before>=3 & After>=3) #Subset to only cases with at least 3 surveyed years before and after designation
-    NotProtSub <- NotProtSub[NotProtSub$SiteCode %in% NotProtSubYears$SiteCode,] #Pull in full count data from relevant sites
-    
-    NotProtSub <- subset(NotProtSub, BA==0) #Subset to just years before designation
-    if(nrow(NotProtSub)==0){ #If no unprotected sites are left, skip
-      MatchMatrix[,i] <- 10
-      next
+    PPSitesSpec <- subset(PPSites, Species==Spec) #Subset the PPSites dataset (with counts at all sites for all protected species) to the relevant species
+    if(length(unique(PPSitesSpec$SiteCode))<2){ #If there are less than two protected sites, skip this species (And write out a null file to mark that this is finished)
+      write.csv(NULL, paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Matched", Spec,".csv"))
+      return(NULL)
     }
     
-    #Finally we need to exact match on class (i.e. slope direction pre-designation)
-    BeforeSlopes <- pbmclapply(unique(NotProtSub$SiteSpecSeason), function(SS){ #Work through each unprotected population
-      BeforeDat <- subset(NotProtSub, SiteSpecSeason==SS)[,c("Count", "Year", "Hours", "Dataset")] #Subset to just the relevant data
-      if(length(unique(BeforeDat$Count))==1){ #If there are just zero counts in all years, return an NULL so that that site is removed as an option
-        if(unique(BeforeDat$Count)==0){
+    NOTPPSitesSpec <- subset(NOTPPSites, Species==Spec) #Subset the unprotected counts to the relevant species
+    SpecAllData <- data.table::rbindlist(list(PPSitesSpec, NOTPPSitesSpec), use.names=TRUE, fill=TRUE) #Combine protected and unprotected data together, filling unoverlapping columns with NAs 
+    
+    MatchMatrix <- as.data.frame(Empty[,colnames(Empty) %in% PPSitesSpec$SiteCode]) #Subset the empty matrix (Created outside the loop) to only the relevant protected site columns
+    MatchMatrix <- MatchMatrix[rownames(MatchMatrix) %in% NOTPPSitesSpec$SiteCode,] #Ditto unprotected site rows 
+    
+    #Now, we go through each protected site individually, first filtering out any sites that arent exact matches and then populating the Empty matrix with the relevant distances from the YearList (MD or PS) based on that protected site's designation year
+    for(i in colnames(MatchMatrix)){ #I.e. for each protected population (because we've subset to both one site and one species)
+      print(i)
+      ProtData <- subset(PPSitesSpec, SiteCode==i)
+      StatYr <- unique(ProtData$STATUS_YR) #Get the designation year
+      
+      #Get protected covariates
+      ProtCovs <- GetMeanCovs(subset(PPSitesSpec, SiteCode==i & Year<= StatYr)) #Get the mean covariate values for the protected population for all years pre-designation
+      
+      #We will exact match on these three covariates
+      Anth <- as.character(ProtCovs$AnthRound) #Get the anthrome value for predesignation
+      Region <- as.character(ProtCovs$GeoRegion) #Get the region value
+      SlopeClass <- unique(subset(PPSitesSpec, SiteCode==i)$Class) #Get the "Class" value (i.e. whether the pre-designation trend is positive, negative or stable)
+      
+      load(file=paste0(ResultsFP, "UnprotectedCovariates/NOTPPSiteCovs_", StatYr, ".RData"))
+      UnProtCovs <- subset(NOTPPSitesCovs, AnthRound==Anth & GeoRegion==Region) #Subset these sites to only cases with the same AnthRound and GeoRegion as the protected site
+      UnProtCovs <- UnProtCovs[UnProtCovs$SiteCode %in% NOTPPSitesSpec$SiteCode,]
+      if(nrow(UnProtCovs)==0){
+        MatchMatrix[,i] <- 10
+        next
+      }
+      UnProtData <- pbmclapply(unique(UnProtCovs$SiteCode), function(j){
+        UnProtData <- subset(NOTPPSitesSpec, SiteCode==j)
+        UnProtData$BA <- ifelse(UnProtData$Year<=StatYr, 0, 1) #Mark rows as before or after designation
+        
+        #Reduce protected site and unprotected site to the same years before and after
+        CountReduce <- rbind(UnProtData[,c("SiteCode", "Year", "Count", "BA", "Treatment")], ProtData[,c("SiteCode", "Year", "Count", "BA", "Treatment")])
+        CountReduceMax <- as.numeric(min(dcast(CountReduce, SiteCode + Treatment~BA, max, value.var="Year")$'1'))
+        CountReduceMin <- as.numeric(max(dcast(CountReduce, SiteCode + Treatment~BA, min, value.var="Year")$'0'))
+        
+        if(((StatYr-CountReduceMin)+1)<5 | (CountReduceMax-StatYr)<5){
           return(NULL)
         }
+        
+        UnProtData <- subset(UnProtData, Year<=CountReduceMax & Year>=CountReduceMin)
+        ProtDataSub <- subset(ProtData, Year<=CountReduceMax & Year>=CountReduceMin)
+        CountReduce <- rbind(UnProtData[,c("SiteCode", "Year", "Count", "BA", "Treatment")], ProtDataSub[,c("SiteCode", "Year", "Count", "BA", "Treatment")])
+        
+        #Check that we have at least 3 years of data (in all of before/after/inside/outside) still
+        CountReduceNYears <- dcast(CountReduce, SiteCode + Treatment~BA, length, value.var="Year")
+        if(min(CountReduceNYears[,c(3:4)])<3 | nrow(CountReduceNYears)!=2){
+          return(NULL) 
+        }
+        
+        #Make sure that the 'zero category' of the protected and unprotected site matches
+        CountsBeforeProt <- ifelse(nrow(subset(ProtDataSub, Count==0 & BA==0))/nrow(subset(ProtDataSub, BA==0))<=ZeroThresh,1,0)
+        CountsBeforeUnprot <- ifelse(nrow(subset(UnProtData, Count==0 & BA==0))/nrow(subset(UnProtData, BA==0))<=ZeroThresh,1,0)
+        if(CountsBeforeProt!=CountsBeforeUnprot){
+          return(NULL)
+        }
+        
+        #And now find the 'before slope' of both the protected and unprotected sites
+        ProtDataSub$Hours <- ifelse(unique(ProtDataSub$Dataset)=="CBC", ProtDataSub$Hours, 1)
+        ProtModel <- tryCatch(glm.nb(Count~Year + offset(log(Hours)), link=log, data=subset(ProtDataSub, BA==0)), error=function(e){NA})
+        ProtSlope <- tryCatch(coef(ProtModel, silent=TRUE)[[2]], error=function(e){NA}) #Record the slope
+        ProtSignificant <- tryCatch(summary(ProtModel)$coeff[-1,4], error=function(e){NA}) #Record the significance level
+        ProtDataSub$Class <- ifelse(is.na(ProtSignificant), 0, #If the significance is NA make it zero
+                                    ifelse(nrow(subset(ProtDataSub, BA==0))>6, ifelse(ProtSlope>0,1,-1), #If the significance is not NA and there's more than 6 years, make it the slope
+                                           ifelse(ProtSignificant>0.05, 0, #If the significance is not NA, it's 6 or less years and the significance is >0.05 make it zero
+                                                  ifelse(ProtSlope>0, 1, -1)))) #Otherwise make it the slope
+        
+        UnProtData$Hours <- ifelse(unique(UnProtData$Dataset)=="CBC", UnProtData$Hours, 1)
+        UnProtModel <- tryCatch(glm.nb(Count~Year + offset(log(Hours)), link=log, data=subset(UnProtData, BA==0)), error=function(e){NA})
+        UnprotSlope <- tryCatch(coef(UnProtModel, silent=TRUE)[[2]], error=function(e){NA}) #Record the slope
+        UnprotSignificant <- tryCatch(summary(UnProtModel)$coeff[-1,4], error=function(e){NA}) #Record the significance level
+        UnProtData$Class <- ifelse(is.na(UnprotSignificant), 0, #If the significance is NA make it zero
+                                   ifelse(nrow(subset(UnProtData, BA==0))>6, ifelse(UnprotSlope>0,1,-1), #If the significance is not NA and there's more than 6 years, make it the slope
+                                          ifelse(UnprotSignificant>0.05, 0, #If the significance is not NA, it's 6 or less years and the significance is >0.05 make it zero
+                                                 ifelse(UnprotSlope>0, 1, -1)))) #Otherwise make it the slope
+        
+        if(unique(ProtDataSub$Class)!=unique(UnProtData$Class)){
+          return(NULL)
+        }
+        
+        #Combine and output the data
+        AllData <- rbind(ProtDataSub, UnProtData)
+        if(length(unique(AllData$Class))!=1){stop("there are multiple classes")}
+        AllData$MatchedUnprot <- j
+        AllData$MatchedProt <- i
+        AllData$CountsBeforeDesig <- CountsBeforeProt
+        return(AllData)
+      }, mc.cores=ncores)
+      UnProtData <- rbindlist(UnProtData)
+      if(nrow(UnProtData)!=0){write.csv(UnProtData, paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Data/MatchData_", Spec,"_", i, ".csv"), row.names=FALSE)}
+      LostSites <- unique(NOTPPSitesSpec$SiteCode)[!unique(NOTPPSitesSpec$SiteCode) %in% unique(UnProtData$SiteCode)]
+      FilteredSites <- unique(NOTPPSitesSpec$SiteCode)[unique(NOTPPSitesSpec$SiteCode) %in% unique(UnProtData$SiteCode)]
+      if((length(FilteredSites)+length(LostSites))!=length(unique(NOTPPSitesSpec$SiteCode))){stop("You've lost some sites!")}
+      MatchMatrix[as.character(LostSites),i] <- 10 
+      if(length(FilteredSites)==0){next}
+      ### Ok and now get the distances and add to matrix
+      DistanceValues <- YearList[[paste0(StatYr)]] #Select the right MD/PS Year (built based on the right Status_Yr)
+      DistanceValues <- DistanceValues[rownames(DistanceValues) %in% FilteredSites,] #Reduce to only the relevant unprotected sites
+      
+      if(is.null(nrow(DistanceValues))){ #I.e. if there's only one unprotected site
+        k <- paste0(FilteredSites) #Get the name of that site
+        MatchMatrix[k, i] <- DistanceValues[[i]] #For the particular cell of the relevant protected site (i) and the unprotected site (k), assign the distance value
+        MatchMatrix[!rownames(MatchMatrix) %in% FilteredSites,i] <- 10 #For the rest of the unprotected sites in the protected column, assign them a value of 10 (i.e. NULL)
+      } else { #If there's more than one unprotected site
+        MatchMatrix[c(names(DistanceValues[,i])), i] <- DistanceValues[,i] #Assign the distance values
+        MatchMatrix[!rownames(MatchMatrix) %in% FilteredSites,i] <- 10 #For the rest of the unprotected sites, assign them a value of 10 (i.e. NULL)
       }
-      if(unique(BeforeDat$Dataset=="CBC")){ #If the dataset is CBC, run a glm.nb with an offset for hours, otherwise just run a simple glm.nb
-        glmmy <- tryCatch(glm.nb(Count~Year + offset(log(x$Hours)), link=log, data=BeforeDat), error=function(e){NA})
-      } else {
-        glmmy <- tryCatch(glm.nb(Count~Year, link=log, data=BeforeDat), error=function(e){NA})
-      }
-      slope <- tryCatch(coef(glmmy, silent=TRUE)[[2]], error=function(e){NA}) #Record the slope
-      significant <- tryCatch(summary(glmmy)$coeff[-1,4], error=function(e){NA}) #Record the significance level
-      return(as.data.frame(cbind(slope, significant, SS))) #Return data
-    }, mc.cores=4)
-     
-    BeforeSlopes2 <- BeforeSlopes[!sapply(BeforeSlopes, is.null)] #Remove Null cases
-    if(length(BeforeSlopes2)==0){ #If no unprotected sites are left, skip
-      MatchMatrix[,i] <- 10
-      next
+      #End loop of protected populations
     }
-    if(length(unique(sapply(BeforeSlopes2, ncol)))!=1){
-      print(paste0("PANIC BEFORESLOPES2 HAS MORE THAN 1 NCOL ", Spec, i))
-    }
-    BeforeSlopes2 <- as.data.frame(rbindlist(BeforeSlopes2))
-    names(BeforeSlopes2) <- c("slope", "significant", "SiteSpecSeason") #Rename
-    BeforeSlopes2$significant <- as.character(BeforeSlopes2$significant)
-    BeforeSlopes2$slope <- as.character(BeforeSlopes2$slope)
-    NumYears <- dcast(NotProtSub, SiteSpecSeason~., length, value.var="Year") #Cast to find number of years predesignation
-    BeforeSlopes2 <- merge(BeforeSlopes2, NumYears, by="SiteSpecSeason") #Add number of years to the slopes data
-    BeforeSlopes2$Class <- ifelse(is.na(BeforeSlopes2$significant), 0, #If the significance is NA make it zero
-                                  ifelse(BeforeSlopes2$.>6, ifelse(BeforeSlopes2$slope>0,1,-1), #If the significance is not NA and there's more than 6 years, make it the slope
-                                         ifelse(BeforeSlopes2$significant>0.05, 0, #If the significance is not NA, it's 6 or less years and the significance is >0.05 make it zero
-                                                ifelse(BeforeSlopes2$slope>0, 1, -1)))) #Otherwise make it the slope
-    BeforeSlopes3 <- subset(BeforeSlopes2, Class==SlopeClass) #Reduce to only cases that match the slope class of our protected population
     
-    if(nrow(BeforeSlopes3)!=0){ #If there is at least one unprotected site left
-      print(c(SlopeClass, unique(BeforeSlopes3$Class))) #Print the classes (for code checking)
-      FilteredSites <- str_split_fixed(BeforeSlopes3$SiteSpecSeason, "[.]",3)[,2] #Get the site code
-    } else {
-      FilteredSites <- NULL
-    }
-    UnProtCovs <- UnProtCovs[UnProtCovs$SiteCode %in% FilteredSites,] #Filter the unprotected covariate dataset down to just the remaining unprotected sites
+    MatchMatrix$PlaceHolder <- "PlaceHolder" #Because r is stupid and if there's only one column it won't return the rowname of the min value
     
-    ### Ok and now get the distances and add to matrix
-    DistanceValues <- MDYearList[[paste0(StatYr)]] #Select the right MD (built based on the right Status_Yr)
-    DistanceValues <- DistanceValues[rownames(DistanceValues) %in% UnProtCovs$SiteCode,] #Reduce to only the relevant unprotected sites
-
-    if(is.null(nrow(DistanceValues))){ #I.e. if there's only one unprotected site
-      k <- paste0(UnProtCovs$SiteCode) #Get the name of that site
-      MatchMatrix[k, i] <- DistanceValues[[i]] #For the particular cell of the relevant protected site (i) and the unprotected site (k), assign the distance value
-      MatchMatrix[!rownames(MatchMatrix) %in% UnProtCovs$SiteCode,i] <- 10 #For the rest of the unprotected sites in the protected column, assign them a value of 10 (i.e. NULL)
-    } else { #If there's more than one unprotected site
-      MatchMatrix[c(names(DistanceValues[,i])), i] <- DistanceValues[,i] #Assign the distance values
-      MatchMatrix[!rownames(MatchMatrix) %in% UnProtCovs$SiteCode,i] <- 10 #For the rest of the unprotected sites, assign them a value of 10 (i.e. NULL)
-    }
-    #End loop of protected populations
-  }
-  
-  MatchMatrix$PlaceHolder <- "PlaceHolder" #Because r is stupid and if there's only one column it won't return the rowname of the min value
-
-  Greedy <- pbmclapply(1:1000, function(iteration){ #Run a greedy algorithm to select the best match for each species
-    MatchMatrix3 <- MatchMatrix #Create a Match Matrix just for this loop
-    MatchedSites <- data.frame("Treatment" = colnames(MatchMatrix3), "Control" = NA, "MD" = NA) #Create a new dataframe which we will population with the matched pairs - a column for protected sites, a column for unprotected sites and a column for the match distance
-    Sample <- sample.int(ncol(MatchMatrix3)-1) #Randomly sample values to the number of columns (i.e. protected sites) in match matrix. This is the order the greedy algorithm will work with for this particular iteration. Skip the last column (placeholde)
-    for(x in Sample){ #Work through the protected columns in the order defined by "Sample"
-      if(min(MatchMatrix3[,x])==10){ #If the minumum distance value in x's column is 10, it means it has no appropriate matches (they've all been blocked out). Skip. 
-        next()
-      } else {
-        Treatment <- rownames(MatchMatrix3[MatchMatrix3[,x] == min(MatchMatrix3[,x]),]) #This is a bit of a weird way of doing it, but it gets the rowname (i.e. unprotected site name) of the minimum distance to the relevant protected column
-        if(length(Treatment)>1){Treatment <- Treatment[1]} #If multiple unprotected sites have the same minimum distance, take the first one
-        MatchedSites[x,2] <- Treatment #Put the relevant unprotected site in our matched dataframe
-        MatchedSites[x,3] <- MatchMatrix3[MatchMatrix3[,x] == min(MatchMatrix3[,x]),x][1] #Add the distance
-        MatchMatrix3[Treatment, ] <- 10 #Mark this site as "chosen" so future protected sites cant take it
+    Greedy <- pbmclapply(1:1000, function(iteration){ #Run a greedy algorithm to select the best match for each species
+      MatchMatrix3 <- MatchMatrix #Create a Match Matrix just for this loop
+      MatchedSites <- data.frame("Treatment" = colnames(MatchMatrix3), "Control" = NA, "Dist" = NA) #Create a new dataframe which we will population with the matched pairs - a column for protected sites, a column for unprotected sites and a column for the match distance
+      Sample <- sample.int(ncol(MatchMatrix3)-1) #Randomly sample values to the number of columns (i.e. protected sites) in match matrix. This is the order the greedy algorithm will work with for this particular iteration. Skip the last column (placeholde)
+      for(x in Sample){ #Work through the protected columns in the order defined by "Sample"
+        if(min(MatchMatrix3[,x])==10){ #If the minumum distance value in x's column is 10, it means it has no appropriate matches (they've all been blocked out). Skip. 
+          next()
+        } else {
+          Treatment <- rownames(MatchMatrix3[MatchMatrix3[,x] == min(MatchMatrix3[,x]),]) #This is a bit of a weird way of doing it, but it gets the rowname (i.e. unprotected site name) of the minimum distance to the relevant protected column
+          if(length(Treatment)>1){Treatment <- Treatment[1]} #If multiple unprotected sites have the same minimum distance, take the first one
+          MatchedSites[x,2] <- Treatment #Put the relevant unprotected site in our matched dataframe
+          MatchedSites[x,3] <- MatchMatrix3[MatchMatrix3[,x] == min(MatchMatrix3[,x]),x][1] #Add the distance
+          MatchMatrix3[Treatment, ] <- 10 #Mark this site as "chosen" so future protected sites cant take it
+        }
       }
+      return(MatchedSites[complete.cases(MatchedSites),]) #Return all matched cases (i.e. ones without an NA)
+    }, mc.cores=ncores)
+    
+    GlobalDistance <- sapply(Greedy, function(x){return(sum(x$Dist))}) #Calculate the global distance (i.e. summed distance) for each greedy run 
+    Matched <- Greedy[[match(min(GlobalDistance),GlobalDistance)]] #Take the Greedy run with the minimum global distance. This is our matched pairings
+    if(nrow(Matched)<2){ #If there are less than two protected sites, skip this species (And write out a null file to mark that this is finished)
+      write.csv(NULL, paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Matched", Spec,".csv"))
+      return(NULL)
     }
-    return(MatchedSites[complete.cases(MatchedSites),]) #Return all matched cases (i.e. ones without an NA)
-  }, mc.cores=ncores)
+    Matched$MatchID <- 1:nrow(Matched) #Assign each protected/unprotected pair a match ID
+    Matched$Treatment <- as.character(Matched$Treatment)
+    Matched$Control <- as.character(Matched$Control)
+    
+    MatchedData <- lapply(c(1:nrow(Matched)), function(g){
+      MatchData <- fread(file=paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Data/MatchData_", Spec,"_", Matched[g,"Treatment"], ".csv"))
+      MatchData <- subset(MatchData, MatchedUnprot== Matched[g,"Control"])
+      MatchData$Dist <- Matched[g,"Dist"]
+      MatchData$MatchID <- Matched[g,"MatchID"]
+      return(MatchData)
+    })
+    MatchedData <- rbindlist(MatchedData)
+    MatchedData$DistComp <- MD_PS
+    write.csv(MatchedData, paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Matched", Spec,".csv"), row.names = FALSE) #Write out the data
+    DeleteDataFiles <- c(list.files(paste0(ResultsFP, "Matching/Match_", MD_PS, "/Zero_", ZeroThresh, "/Data"), full.names=TRUE))
+    sapply(DeleteDataFiles, unlink)
+    return(Spec)
+  })
+}
+
+lapply(c(0.5, 0.6, 0.7, 0.8, 0.9, 1), function(ZeroThreshhy){
+  print(paste0("Starting MD ", ZeroThreshhy))
+  Matching(MD_PS="MD", YearList=MDYearList, ZeroThresh=ZeroThreshhy)
+  print(paste0("Finishing MD ", ZeroThreshhy))
   
-  GlobalDistance <- sapply(Greedy, function(x){return(sum(x$MD))}) #Calculate the global distance (i.e. summed distance) for each greedy run 
-  Matched <- Greedy[[match(min(GlobalDistance),GlobalDistance)]] #Take the Greedy run with the minimum global distance. This is our matched pairings
-  if(nrow(Matched)==0){ #If there are less than two protected sites, skip this species (And write out a null file to mark that this is finished)
-    write.csv(NULL, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"))
-    return(NULL)
-  }
-  Matched$MatchID <- 1:nrow(Matched) #Assign each protected/unprotected pair a match ID
-  Matched$Treatment <- as.character(Matched$Treatment)
-  Matched$Control <- as.character(Matched$Control)
-  Matched <- melt(Matched, id.vars=c("MatchID", "MD")) #Melt down the matched dataset so all site codes (protected or unprotected) are in one column
-  names(Matched) <- c("MatchID", "MD", "Treatment", "SiteCode") #Rename the columns
-  Matched$Treatment <- NULL #Remove the treatment column (it's already defined in SpecAllData)
-  Matched <- merge(Matched, SpecAllData, by="SiteCode") #Add the matched values (+ distance, and the MatchID which defines the pairs) to the full dataframe
-  write.csv(Matched, paste0(ResultsFP, "MatchFinal/Matched", Spec,".csv"), row.names = FALSE) #Write out the data
-  return(Matched)
+  print(paste0("Starting PS ", ZeroThreshhy))
+  Matching(MD_PS="PS", YearList=PSYearList, ZeroThresh=ZeroThreshhy)
+  print(paste0("Finishing PS ", ZeroThreshhy))
 })
 
 #### FOR MEETING KILL ME LATER ####
@@ -779,7 +922,7 @@ MatchingFinal2 <- MatchingFinal2[!MatchingFinal2 %in% MatchingFinal] #Then reduc
 MatchingFinal2Names <- str_split_fixed(MatchingFinal2, "Matched",2)[,2] #Get the species names
 MatchingFinal2Names <- str_split_fixed(MatchingFinal2Names, ".csv",2)[,1]
 
-if(length(MatchingFinal2Names[!MatchingFinal2Names%in%MatchingFinalNames])>0){print("PANIC A SPECIES IS MISSING!")} #If we don't have the same length of check and actual species files, there's an error!
+if(length(MatchingFinal2Names[!MatchingFinal2Names%in%MatchingFinalNames])>0){stop("PANIC A SPECIES IS MISSING!")} #If we don't have the same length of check and actual species files, there's an error!
 
 MatchingFinal <- pblapply(MatchingFinal2, function(x){ #If all is ok, read in the actual matching files
   return(fread(x, fill=TRUE))
@@ -876,7 +1019,7 @@ SummariesFinal <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "Summaries/
 MatchCovariateMeans <- rbindlist(lapply(list.files(path=paste0(ResultsFP, "MatchData/Final/"), full.names=TRUE), fread))
 MatchingFinalCleaned <- MatchingFinal[MatchingFinal$SpecMatch %in% MatchCovariateMeans$SpecMatch,]
 
-#save(MatchingFinalCleaned, file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
+save(MatchingFinalCleaned, file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
 #load(file=paste0(ResultsFP, "MatchData/MatchingFinalCleaned.RData"))
 
 TheNumbers(subset(MatchingFinalCleaned, Treatment==1))
