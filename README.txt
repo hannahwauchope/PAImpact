@@ -1,8 +1,8 @@
 READ ME
 
 This code is associated with the paper:
-Wauchope, H. S., Jones, J. P. G., Geldmann, J., Simmons, B. I., Amano, T., Blanco, D., Fuller, R.A., Johnston, A., Langendoen, T., Mundkur T., Nagy, S., Sutherland, W.J. (2022) "Protected areas have a mixed impact on waterbirds but management helps" Nature. (Volume and Issue not assigned at time of writing)
-It was written by Hannah Wauchope (current affiliation: The University of Exeter). Please do not hesitate to direct any queries to hannah.wauchope@gmail.com
+Wauchope, H. S., Jones, J. P. G., Geldmann, J., Simmons, B. I., Amano, T., Blanco, D., Fuller, R.A., Johnston, A., Langendoen, T., Mundkur T., Nagy, S., Sutherland, W.J. (2022) "Protected areas have a mixed impact on waterbirds but management helps" Nature, 605:103–107
+It was written by Hannah Wauchope (The University of Edinburgh). Please do not hesitate to direct any queries to hannah.wauchope@gmail.com
 
 ***
 
